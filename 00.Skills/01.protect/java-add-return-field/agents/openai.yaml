@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java 新增返回字段"
+  short_description: "追踪Java返回字段数据链路并按SDD完成实现验证"
+  default_prompt: "使用 $java-add-return-field 为 Java 接口或方法新增返回字段，并完成链路分析、设计评审与 SDD 实现。"
