@@ -1,4 +1,4 @@
 interface:
   display_name: "Java 新增返回字段"
-  short_description: "分级复用类似字段流程，追踪Java返回链路并按SDD验证"
-  default_prompt: "使用 $java-add-return-field 为 Java 接口或方法新增返回字段，分级复用类似字段实现，完成增量或完整链路设计、评审与 SDD 实现。"
+  short_description: "逐个确认需求，按 OpenSpec 双确认流程实现完整返回字段链路"
+  default_prompt: "使用 $java-add-return-field 为指定 Java 方法新增返回字段，先逐个收集最低必要信息，再分析完整传递链路，并在方案和经校验的 OpenSpec 文档分别确认后实现、编译和调试。"
