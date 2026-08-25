@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java 代码流程梳理"
+  short_description: "从指定入口追踪 Java 调用链、关键代码节点与关键日志"
+  default_prompt: "使用 $java-code-flow-analysis 从指定入口梳理 Java 代码流程，并生成包含 Mermaid、调用树、关键代码节点和关键日志的 Markdown 文档。"
