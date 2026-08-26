@@ -27,6 +27,19 @@
 
 净收益不明显时不委派。无法准确估算时，先单 agent 展开一个高优先级节点，再根据实际扇出和证据量决定是否升级。
 
+## 委派前横切预检
+
+主 agent 在划分业务子图前，用最小读取确认以下内容，并把结论列入共享节点清单：
+
+- 入口映射、参数绑定与 Bean Validation。
+- Security filter/interceptor、URL 授权配置和身份上下文来源。
+- Controller advice、统一异常映射和入口日志切面。
+- 事务注解可能出现的接口、实现、父类及事务启用配置。
+- 缓存、重试、异步等会改变调用语义的 AOP 注解或 pointcut。
+- MQ listener/container 或 scheduler 注册配置。
+
+只摘要真正覆盖目标入口的横切节点。子 agent 获得这些已证实事实后不得重复分析，除非发现直接冲突；这既避免漏链，也减少每个子图重复读取 Controller、事务和异常处理。
+
 ## 1. 建立可恢复的图账本
 
 不要依赖对话上下文保存整个调用树。只有当前上下文无法可靠容纳图状态时，才在临时目录维护紧凑检查点；除最终 Markdown 外不要把中间产物写进目标仓库。推荐内容：
@@ -66,8 +79,7 @@
 | condition | 分支条件、配置条件或异常条件 |
 | type | sync、async、event、mq、rpc、db、aop、callback、return、exception |
 | confidence | certain、configured、inferred、unknown |
-| reason | 绑定依据或无法解析原因 |
-| argument/exception facts | 当前调用点传入的关键事实及异常传播行为 |
+| evidence_summary | 一句话记录绑定依据、关键参数事实或异常传播；未知时说明所缺证据 |
 
 最终 `N1`、`N2` 编号由主 agent 在图合并稳定后统一分配。子 agent 只返回规范符号键和调用点 edge_id，避免编号冲突。同一方法可以共享一个节点，但不同参数事实、分支、事务或线程上下文必须保留为不同边；必要时在节点 context 中记录场景差异。
 
@@ -116,6 +128,7 @@
 - 已知输入、调用前置条件和期望停止边界。
 - 允许读取的模块/目录及明确范围外内容。
 - 当前节点/边账本快照、已知祖先路径、运行时绑定和避免重复的 claimed 节点。
+- 主 agent 已完成的共享横切节点与禁止重复展开的符号清单。
 - 合理的深度或上下文预算；预算只决定何时返回 partial，不改变完成标准。
 - 必须覆盖成功、关键分支、异常、返回/数据流、日志和动态绑定。
 - 只读约束与证据状态定义。
@@ -123,30 +136,64 @@
 
 ### 子 agent 返回格式
 
-```markdown
-## Subgraph result: <root canonical key>
+深度档使用机器可校验 JSON 增量，避免 Markdown 表格枚举漂移和人工合并错误。只返回被分配子图的增量，不重复祖先、共享横切节点或其他子图。字段摘要保持一句话；不复制源码，不附带未请求的代码审计报告。
 
-- Coverage: `<expanded / partial / blocked>`
-- Root precondition: `<进入该子图的条件>`
-- Terminal points: `<返回、DB、RPC、MQ 等>`
-
-### Node delta
-| canonical key | file:symbol | role | state | summary | evidence |
-
-### Edge delta
-| edge_id | from | to/candidates | callsite | condition | argument/exception facts | type | confidence | reason |
-
-### Key logs
-| node key | location | level/template | trigger | diagnostic value |
-
-### Return/data flow
-`<输入 -> 转换 -> 输出/状态>`
-
-### Unresolved and boundaries
-| item | state | reason | impact | next evidence needed |
+```json
+{
+  "root_key": "<canonical key>",
+  "coverage": "expanded | partial | blocked",
+  "nodes": [
+    {
+      "key": "<canonical key>",
+      "state": "discovered | claimed | expanded | partial | folded | boundary | out-of-scope | unresolved",
+      "direct_calls_complete": true,
+      "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
+      "file_symbol": "<path:line / symbol>",
+      "role": "<entry/orchestration/validation/db/rpc/message/...>",
+      "context": "<condition, transaction and thread facts>",
+      "summary": "<one sentence>"
+    }
+  ],
+  "edges": [
+    {
+      "edge_id": "<callsite-stable id>",
+      "from": "<canonical key>",
+      "to": "<canonical key or boundary:... or unresolved:...>",
+      "type": "sync | async | event | mq | rpc | db | aop | callback | return | exception",
+      "confidence": "certain | configured | inferred | unknown",
+      "resolution_status": "resolved | boundary | excluded | unresolved",
+      "callsite": "<path:line>",
+      "condition": "<condition>",
+      "evidence_summary": "<binding, argument or exception fact>"
+    }
+  ],
+  "key_logs": [
+    {
+      "log_id": "<path:line>",
+      "node_key": "<canonical key>",
+      "source_type": "code | aspect | filter | interceptor | wrapper",
+      "event_type": "arrival | decision | handoff | external-result | state-change | failure",
+      "timing": "before | after-return | after-commit | catch | finally",
+      "relative_to": "<call, transaction or handler>",
+      "level": "<TRACE/DEBUG/INFO/WARN/ERROR>",
+      "stable_template": "<source template with semantic placeholders>",
+      "condition": "<code branch and runtime logging condition>",
+      "correlation_fields": ["<traceId/business key/...>"],
+      "proves": "<what this event proves>",
+      "does_not_prove": "<nearest likely overclaim>",
+      "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
+      "sensitive_risk": "<none or concise risk>"
+    }
+  ],
+  "data_flows": [],
+  "unresolved": [],
+  "frontier": []
+}
 ```
 
-子 agent 不分配最终 `N` 编号、不修改最终文档、不把推断改写成事实。若发现范围外的新子图，只登记到 frontier，不自行无限追踪。默认保持单层委派；只有协调者明确给出命名空间和合并协议时才继续递归委派。上下文或时间预算耗尽时必须返回 `partial`、已覆盖调用点、未完成 frontier 和下一步，不得返回 `expanded`。
+子 agent 不分配最终 `N` 编号、不修改最终文档、不新增枚举值、不把推断改写成事实。若发现代码缺陷，只在它改变本子图控制/数据语义时用一句事实描述，不继续扩展审计。若发现范围外的新子图，只登记到 frontier，不自行无限追踪。默认保持单层委派；只有协调者明确给出命名空间和合并协议时才继续递归委派。上下文或时间预算耗尽时必须返回 `partial`、已覆盖调用点、未完成 frontier 和下一步，不得返回 `expanded`。
+
+主 agent 将 JSON 增量保存到临时目录并使用 [scripts/graph_audit.py](../scripts/graph_audit.py) 合并校验。静态范围分析使用 `--require-analyzed`；只有要求调用图完全闭合时使用 `--require-closed`。非法枚举、缺字段、重复 edge/log id、缺失根节点或悬空边必须修正后再合并。脚本只验证结构，主 agent 仍须复核源码证据和动态绑定。
 
 ## 5. 主 agent 合并协议
 
@@ -157,6 +204,7 @@
 3. 领取任务前将节点原子地标为 claimed；合并后将新发现节点加入 frontier，并更新 expanded、partial、boundary、unresolved 等状态，避免不同 agent 重复领取。
 4. 对重复读取的共享节点保留证据更强、范围更完整的结果，不拼接矛盾摘要。
 5. 重新计算下一波优先级；在账本合并前不派发依赖上一波结果的新任务。
+6. 独立复核所有高影响负面结论，尤其是“无事务、无日志、无实际实现、无消费者、无异常处理”。缺少搜索范围和证据的负面结论一律降为 unknown。
 
 上下文紧张时，主 agent只保留 scope、节点/边摘要、frontier 和未决冲突在当前上下文中；详细代码摘录留在检查点，需要裁决时再读取源文件，不复制所有子 agent 长篇说明。
 
@@ -174,15 +222,17 @@
 
 ## 7. 完整性审计与停止条件
 
-只有满足以下条件，才能说“在声明范围内调用链已完整梳理”：
+达到“静态范围分析完成”必须满足：
 
-- frontier 为空；所有发现节点均为 expanded、folded、boundary、out-of-scope 或 unresolved。
+- frontier 与 partial 为空；所有发现节点均为 expanded、folded、boundary、out-of-scope 或 unresolved。
 - 每个 expanded 方法内的相关调用点都有对应边或明确分类。
 - 每个关键条件分支、异常出口和返回路径均有去向。
-- 接口多实现、配置路由、反射与 AOP 已解析，或作为 unresolved 列出候选和影响。
+- 接口多实现、配置路由、反射与 AOP 已解析，或作为 unresolved 列出候选、影响和验证方式。
 - 异步/MQ 边已连接到消费者，或明确停在无法证明的边界。
 - 循环、递归和重入以回边表达，不造成无限展开。
 - 控制流与数据/返回流能够互相解释，关键日志已映射到稳定节点。
 - 每个折叠、范围外和边界决定都有理由，不存在“因为上下文不够所以省略”的隐式缺口。
+
+只有 unresolved 节点、边和清单也全部为零，才能升级为“调用图已闭合”并声称“声明范围内调用链已完整解析”。外部边界不算 unresolved，但必须有明确停止理由。
 
 达到上下文、时间或可用 agent 限制但 frontier 未清空时，只能交付“阶段性骨架”，并量化剩余 frontier、最高风险未展开节点及继续分析方式；不能把它称为完整调用链。
