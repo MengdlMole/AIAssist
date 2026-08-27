@@ -40,7 +40,15 @@
 - 默认不粘贴完整方法。只有表格和引用不足以证明关键条件、字段映射或异常语义时，才附最小连续代码片段；不得用省略号改变条件关系。
 - 一个引用只支撑其实际覆盖的事实；多个调用点或分支不能共用一个模糊的类级引用。
 
-关键节点至少输出：节点编号、reference、角色、进入条件、关键输入/输出、状态或副作用、下一跳/返回、证据状态。代码证据状态只使用：`代码已证实 / 运行已证实 / 推断 / 未知`。
+生成代码或框架代理源码不在仓库时，不得虚构实现位置。使用降级引用：`声明 reference + 生成/绑定配置 reference + 实际 callsite + 实现来源(generated/framework-proxy)`；缺少哪项就明确写 `unavailable`。框架内部调用只写到契约边界。
+
+关键节点至少输出：调用路径编号、父节点与 callsite、短代码符号、业务动作、reference、角色、进入条件、关键输入/输出、状态或副作用、下一跳/返回、证据状态和依据来源。路径编号绑定本场景的一次调用而非方法本身；同一方法从不同分支调用时分别编号。调用身份由 `<规范符号键>@<callsite>[<分支/事务/线程上下文>]` 确定。
+
+- `N`：业务调用树中的一次可见调用；根 `N1`，子调用按路径扩展。
+- `X`：校验、安全、事务代理、异常 Advice 等框架拦截或分派节点；除非存在普通直接调用，否则不进入 `N` 树。
+- `L`：日志。必须关联到已有 `N`、已有 `X`、明确边界或“来源未知”，不得把 Controller 前置日志关联到 `N1`。
+
+证据状态只使用 `代码已证实 / 运行已证实 / 推断 / 未知`；依据来源使用 `项目源码 / 配置绑定 / 生成契约 / 框架契约 / 运行证据`，两者不得混写。注解存在不等于某次运行已触发代理、提交事务或完成外部副作用。
 
 ## 4. 关键日志标准
 
@@ -60,7 +68,7 @@
 
 - 代码条件：所在分支、成功/异常路径、重试次数或消费阶段。
 - 运行条件：日志级别是否启用、logger 配置、采样/过滤，以及切面是否匹配；配置未知时写“到达调用点，但实际输出取决于运行配置”。
-- 时点：`before / after-return / after-commit / catch / finally`，并写明相对于哪个调用或事务。
+- 时点：`before / after-return / after-commit / on-exception / finally`，并写明相对于哪个调用或事务。`on-exception` 另写机制：`catch / advice / listener-error-callback / retry-hook`。
 - 证明范围：它实际证明什么，以及不能证明什么。
 
 不得跨越时点过度推断：
@@ -69,7 +77,7 @@
 - Mapper/HTTP/MQ 方法返回后的日志只证明该调用按当前 API 语义返回；不自动证明事务提交、远端业务完成、Broker 持久化或消息消费成功。
 - 只有事务提交回调、明确框架/运行证据才能证明 commit。
 - producer 日志与 consumer 日志分别证明各自阶段；异步日志顺序不能当作严格调用顺序。
-- catch 日志证明进入异常处理，不自动证明回滚、重试或最终失败。
+- on-exception 日志只证明进入对应 catch/advice/callback 等异常处理，不自动证明回滚、重试或最终失败。
 
 ### 日志内容与输出字段
 
@@ -79,7 +87,7 @@
 | --- | --- |
 | 标识与位置 | `L1`、关联节点、`path:line · symbol` |
 | 来源与级别 | code/aspect/filter/interceptor/wrapper；TRACE/DEBUG/INFO/WARN/ERROR |
-| 事件与时点 | 事件只用 arrival/decision/handoff/external-result/state-change/failure；时点只用 before/after-return/after-commit/catch/finally，并写相对对象 |
+| 事件与时点 | 事件只用 arrival/decision/handoff/external-result/state-change/failure；时点只用 before/after-return/after-commit/on-exception/finally，并写相对对象；on-exception 补处理机制 |
 | 模板与字段 | 稳定模板、traceId/requestId/业务主键等关联字段 |
 | 打印条件 | 代码分支 + 已知运行配置；未知配置显式标注 |
 | 诊断含义 | 能证明什么 / 不能证明什么 |

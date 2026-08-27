@@ -21,6 +21,13 @@ NODE_STATES = {
     "unresolved",
 }
 EVIDENCE = {"code-confirmed", "runtime-confirmed", "inferred", "unknown"}
+EVIDENCE_BASIS = {
+    "project-source",
+    "configuration-binding",
+    "generated-contract",
+    "framework-contract",
+    "runtime-evidence",
+}
 EDGE_TYPES = {
     "sync",
     "async",
@@ -45,7 +52,8 @@ LOG_EVENTS = {
     "state-change",
     "failure",
 }
-LOG_TIMINGS = {"before", "after-return", "after-commit", "catch", "finally"}
+LOG_TIMINGS = {"before", "after-return", "after-commit", "on-exception", "finally"}
+EXCEPTION_MECHANISMS = {"catch", "advice", "listener-error-callback", "retry-hook"}
 LOG_LEVELS = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"}
 
 
@@ -73,6 +81,15 @@ def load_fragment(path: Path, errors: list[str]) -> dict[str, Any] | None:
     return value
 
 
+def audit_evidence_basis(value: Any, label: str, errors: list[str]) -> None:
+    if not isinstance(value, list) or not value:
+        fail(errors, f"{label}: evidence_basis must be a non-empty array")
+        return
+    invalid = [item for item in value if item not in EVIDENCE_BASIS]
+    if invalid:
+        fail(errors, f"{label}: invalid evidence_basis {invalid!r}")
+
+
 def audit_node(node: Any, source: Path, errors: list[str]) -> str | None:
     if not isinstance(node, dict):
         fail(errors, f"{source}: node must be an object")
@@ -84,6 +101,7 @@ def audit_node(node: Any, source: Path, errors: list[str]) -> str | None:
             "state",
             "direct_calls_complete",
             "evidence",
+            "evidence_basis",
             "file_symbol",
             "role",
             "context",
@@ -101,6 +119,7 @@ def audit_node(node: Any, source: Path, errors: list[str]) -> str | None:
         fail(errors, f"{source}: node {key}: invalid state {state!r}")
     if node.get("evidence") not in EVIDENCE:
         fail(errors, f"{source}: node {key}: invalid evidence {node.get('evidence')!r}")
+    audit_evidence_basis(node.get("evidence_basis"), f"{source}: node {key}", errors)
     direct_complete = node.get("direct_calls_complete")
     if not isinstance(direct_complete, bool):
         fail(errors, f"{source}: node {key}: direct_calls_complete must be boolean")
@@ -128,6 +147,7 @@ def audit_edge(edge: Any, source: Path, errors: list[str]) -> str | None:
             "callsite",
             "condition",
             "evidence_summary",
+            "evidence_basis",
         ),
         f"{source}: edge",
         errors,
@@ -148,6 +168,7 @@ def audit_edge(edge: Any, source: Path, errors: list[str]) -> str | None:
     for field in ("from", "to", "callsite", "condition", "evidence_summary"):
         if not isinstance(edge.get(field), str) or not edge[field].strip():
             fail(errors, f"{source}: edge {edge_id}: {field} must be a non-empty string")
+    audit_evidence_basis(edge.get("evidence_basis"), f"{source}: edge {edge_id}", errors)
     return edge_id
 
 
@@ -169,6 +190,7 @@ def audit_log(log: Any, source: Path, errors: list[str]) -> str | None:
         "proves",
         "does_not_prove",
         "evidence",
+        "evidence_basis",
         "sensitive_risk",
     )
     require_fields(log, fields, f"{source}: key_log", errors)
@@ -186,6 +208,12 @@ def audit_log(log: Any, source: Path, errors: list[str]) -> str | None:
     for field, allowed in enum_fields:
         if log.get(field) not in allowed:
             fail(errors, f"{source}: key_log {log_id}: invalid {field} {log.get(field)!r}")
+    audit_evidence_basis(log.get("evidence_basis"), f"{source}: key_log {log_id}", errors)
+    if log.get("timing") == "on-exception" and log.get("exception_mechanism") not in EXCEPTION_MECHANISMS:
+        fail(
+            errors,
+            f"{source}: key_log {log_id}: on-exception requires exception_mechanism",
+        )
     for field in (
         "node_key",
         "relative_to",

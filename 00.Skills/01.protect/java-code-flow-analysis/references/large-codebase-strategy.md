@@ -66,6 +66,7 @@
 | state | discovered、claimed、expanded、partial、folded、boundary、out-of-scope、unresolved |
 | summary | 一句话说明与用户场景的关系 |
 | evidence | 代码已证实、运行已证实、推断、未知 |
+| evidence_basis | 项目源码、配置绑定、生成契约、框架契约、运行证据，可多选 |
 | direct_calls_complete | 是否已完整枚举该方法在当前场景下的相关直接调用与出口 |
 | context | 已知参数事实、事务、线程和到达该节点的场景条件 |
 
@@ -80,8 +81,9 @@
 | type | sync、async、event、mq、rpc、db、aop、callback、return、exception |
 | confidence | certain、configured、inferred、unknown |
 | evidence_summary | 一句话记录绑定依据、关键参数事实或异常传播；未知时说明所缺证据 |
+| evidence_basis | project-source、configuration-binding、generated-contract、framework-contract、runtime-evidence，可多选 |
 
-最终 `N1`、`N2` 编号由主 agent 在图合并稳定后统一分配。子 agent 只返回规范符号键和调用点 edge_id，避免编号冲突。同一方法可以共享一个节点，但不同参数事实、分支、事务或线程上下文必须保留为不同边；必要时在节点 context 中记录场景差异。
+最终展示编号由主 agent 在图合并、折叠和树结构稳定后统一分配：根为 `N1`，直接子调用为 `N1.1`、`N1.2`，下一层按路径扩展。同一方法可共享规范节点，但每个 `<规范符号键>@<incoming edge_id>[context]` 调用身份分别编号；循环/递归使用 `↩ <已有编号>` 回指。横切共享节点若由框架拦截或分派而非普通直接调用，使用独立 `X` 编号，不伪装成 `N` 的子调用。子 agent 只返回规范符号键、edge_id、上下文和一句业务动作，不分配展示编号。
 
 ## 2. 第一阶段：受约束的浅层 BFS
 
@@ -148,6 +150,7 @@
       "state": "discovered | claimed | expanded | partial | folded | boundary | out-of-scope | unresolved",
       "direct_calls_complete": true,
       "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
+      "evidence_basis": ["project-source"],
       "file_symbol": "<path:line / symbol>",
       "role": "<entry/orchestration/validation/db/rpc/message/...>",
       "context": "<condition, transaction and thread facts>",
@@ -164,7 +167,8 @@
       "resolution_status": "resolved | boundary | excluded | unresolved",
       "callsite": "<path:line>",
       "condition": "<condition>",
-      "evidence_summary": "<binding, argument or exception fact>"
+      "evidence_summary": "<binding, argument or exception fact>",
+      "evidence_basis": ["project-source"]
     }
   ],
   "key_logs": [
@@ -173,7 +177,8 @@
       "node_key": "<canonical key>",
       "source_type": "code | aspect | filter | interceptor | wrapper",
       "event_type": "arrival | decision | handoff | external-result | state-change | failure",
-      "timing": "before | after-return | after-commit | catch | finally",
+      "timing": "before | after-return | after-commit | on-exception | finally",
+      "exception_mechanism": "<catch | advice | listener-error-callback | retry-hook; only for on-exception>",
       "relative_to": "<call, transaction or handler>",
       "level": "<TRACE/DEBUG/INFO/WARN/ERROR>",
       "stable_template": "<source template with semantic placeholders>",
@@ -182,6 +187,7 @@
       "proves": "<what this event proves>",
       "does_not_prove": "<nearest likely overclaim>",
       "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
+      "evidence_basis": ["project-source"],
       "sensitive_risk": "<none or concise risk>"
     }
   ],
@@ -190,6 +196,8 @@
   "frontier": []
 }
 ```
+
+`evidence_basis` 至少选择一个合法值：`project-source / configuration-binding / generated-contract / framework-contract / runtime-evidence`。`exception_mechanism` 仅在 `timing=on-exception` 时必填，其他时点省略。
 
 子 agent 不分配最终 `N` 编号、不修改最终文档、不新增枚举值、不把推断改写成事实。若发现代码缺陷，只在它改变本子图控制/数据语义时用一句事实描述，不继续扩展审计。若发现范围外的新子图，只登记到 frontier，不自行无限追踪。默认保持单层委派；只有协调者明确给出命名空间和合并协议时才继续递归委派。上下文或时间预算耗尽时必须返回 `partial`、已覆盖调用点、未完成 frontier 和下一步，不得返回 `expanded`。
 
