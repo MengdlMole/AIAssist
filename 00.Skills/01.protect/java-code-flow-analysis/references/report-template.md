@@ -33,7 +33,7 @@
 时序图规则：
 
 - participant 按职责聚合，如 `Caller`、`Security`、`Controller`、`Service`、`DB`、`Redis`、`MQ`、`Consumer`；不要为每个 helper 建 participant。
-- 首次调用消息固定为 `N1.2 业务动作 · Class#method`，同时提供编号、可读语义和可核对的短代码符号；不放完整包名、路径或参数签名。禁用 Mermaid `autonumber`。
+- 首次调用消息固定为 `N1.2 业务动作 · Class#35;method`，同时提供编号、可读语义和可核对的短代码符号；不放完整包名、路径或参数签名。Mermaid 代码块中所有字面 `#` 都必须写成 `#35;`，渲染后仍显示为 `#`；调用树、表格和 reference 仍写 `Class#method`。禁用 Mermaid `autonumber`。
 - 时序图可以按职责聚合 participant，但不能省略已编号调用；低层 helper 应先在调用树中折叠为无编号说明。返回写“返回 N1.1 + 结果语义”，不重复短代码符号，不创建新编号。
 - `->>` 表示代码已证实的同步调用，`-->>` 表示返回；异步消息用 `-)`，并在标签中写“异步”。推断边在标签或 `Note` 中标为“推断/配置驱动”，不要只依赖线型。
 - 使用 `alt/else/end` 表达关键互斥分支，`opt` 表达可选路径，`loop` 只表达有业务意义的循环；普通 helper 不进入图。
@@ -106,15 +106,15 @@ sequenceDiagram
     participant DB as Database
     participant X as External/MQ
 
-    Caller->>C: N1 <入口动作> · <Controller#method>
-    C->>S: N1.1 <业务调用> · <Service#method>
+    Caller->>C: N1 <入口动作> · <Controller#35;method>
+    C->>S: N1.1 <业务调用> · <Service#35;method>
     alt <失败条件>
-        S->>C: N1.1.1 <异常处理> · <Handler#method>
+        S->>C: N1.1.1 <异常处理> · <Handler#35;method>
         C-->>Caller: 返回 N1
     else <成功条件>
-        S->>DB: N1.1.2 <关键读写> · <Repository#method>
+        S->>DB: N1.1.2 <关键读写> · <Repository#35;method>
         DB-->>S: 返回 N1.1.2
-        S-)X: N1.1.3 <异步/外部交接> · <Publisher#method>
+        S-)X: N1.1.3 <异步/外部交接> · <Publisher#35;method>
         S-->>C: 返回 N1.1
         C-->>Caller: 返回 N1
     end
@@ -229,6 +229,7 @@ N1 [入口] <Class#method> — <职责> {代码已证实}
 - [ ] 每个已展开方法的相关直接调用点都有边、边界、折叠、范围外或未解析状态。
 - [ ] “未发现”类结论已检查接口、实现、父类、配置、AOP 和必要映射，并注明检索范围。
 - [ ] 业务时序图、代码调用树、节点表的 `N` 集合完全相等；每个首次调用同时显示业务动作和短代码符号，父编号、调用身份、语义和证据一致。
+- [ ] Mermaid 代码块中没有原始 `#`；方法分隔符均写为 `#35;`，块外仍使用 `#`。
 - [ ] 横切节点使用 `X` 且未伪装成业务直接调用；每个 `L` 关联到已有 `N`、已有 `X`、边界或来源未知。
 - [ ] 分支、异步、事务、外部和异常边界已标注。
 - [ ] 关键日志来自真实可达代码，建议日志已分开。

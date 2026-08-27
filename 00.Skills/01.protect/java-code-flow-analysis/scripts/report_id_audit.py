@@ -15,6 +15,9 @@ N_ID = r"N\d+(?:\.\d+)*"
 N_ID_PATTERN = re.compile(rf"(?<![A-Za-z0-9.]){N_ID}(?![\d.])")
 SHORT_SYMBOL = r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*#[A-Za-z_$][\w$]*"
 SHORT_SYMBOL_PATTERN = re.compile(SHORT_SYMBOL)
+MERMAID_SHORT_SYMBOL = (
+    r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:#35;|#)[A-Za-z_$][\w$]*"
+)
 FENCE_PATTERN = re.compile(r"```(?P<kind>\w+)\s*\n(?P<body>.*?)```", re.DOTALL)
 
 
@@ -49,11 +52,19 @@ def markdown_cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+def validate_mermaid_entities(text: str, errors: list[str]) -> None:
+    for fence in FENCE_PATTERN.finditer(text):
+        if fence.group("kind").lower() != "mermaid":
+            continue
+        if re.search(r"#(?!35;)", fence.group("body")):
+            errors.append("mermaid: literal '#' is forbidden; use '#35;'")
+
+
 def sequence_records(section: str, errors: list[str]) -> tuple[list[str], dict[str, str]]:
     references: list[str] = []
     definitions: list[tuple[str, str]] = []
     definition_pattern = re.compile(
-        rf":\s*({N_ID})\s+(.+?)\s+·\s+({SHORT_SYMBOL})\s*$"
+        rf":\s*({N_ID})\s+(.+?)\s+·\s+({MERMAID_SHORT_SYMBOL})\s*$"
     )
     for fence in FENCE_PATTERN.finditer(section):
         if fence.group("kind").lower() != "mermaid":
@@ -72,10 +83,10 @@ def sequence_records(section: str, errors: list[str]) -> tuple[list[str], dict[s
             if not match:
                 errors.append(
                     "sequence: first-call message must be "
-                    f"'<ID> <action> · <Class#method>': {line.strip()}"
+                    f"'<ID> <action> · <Class#35;method>': {line.strip()}"
                 )
                 continue
-            definitions.append((match.group(1), match.group(3)))
+            definitions.append((match.group(1), match.group(3).replace("#35;", "#")))
 
     counts = Counter(node_id for node_id, _ in definitions)
     duplicates = sorted(node_id for node_id, count in counts.items() if count != 1)
@@ -271,6 +282,7 @@ def audit(path: Path) -> list[str]:
 
     if re.search(r"^\s*autonumber\b", sequence_section, re.MULTILINE | re.IGNORECASE):
         errors.append("sequence: Mermaid autonumber is forbidden")
+    validate_mermaid_entities(text, errors)
     sequence_refs, sequence_symbols = sequence_records(sequence_section, errors)
     tree_ids, tree_symbols = tree_records(tree_section, errors)
     table_ids, node_records = node_table_records(node_section, errors)
