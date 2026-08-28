@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java Business Flow Synthesis"
+  short_description: "串联多个子流程并冻结经开发者确认的分层宏观业务流程"
+  default_prompt: "Use $java-business-flow-synthesis to combine reviewed subflows into a developer-approved, versioned macro business flow."
