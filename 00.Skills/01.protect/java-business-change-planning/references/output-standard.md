@@ -98,6 +98,6 @@
 }
 ```
 
-`status` 只用 `impact-review / design-draft / developer-review / approved / superseded`；`analysis_mode` 只用 `reuse-report / refresh-with-java-code-flow-analysis`；`evidence_coverage` 只用 `complete / partial / stale / unknown`；`change_points.kind` 只用 `add / modify / remove / config / schema`。`reuse-report` 必须满足 `report_baseline == repository_baseline` 且 coverage 为 `complete`。除 `add` 外，改动点必须引用本工作包的 `<flow_id>/N...` 现有证据。
+`status` 只用 `impact-review / design-draft / developer-review / approved / superseded`；`analysis_mode` 只用 `reuse-report / refresh-with-java-code-flow-analysis`；`evidence_coverage` 只用 `complete / partial / stale / unknown`；`change_points.kind` 只用 `add / modify / remove / config / schema`。`reuse-report` 必须满足 `report_baseline == repository_baseline` 且 coverage 为 `complete`。除 `add` 外，改动点必须引用本工作包的 `<flow_id>/N...` 现有证据，且 `N` 必须存在于冻结宏观契约的来源节点清单。同一 `path + symbol` 不得由多个工作包拥有。
 
 `cross_flow_contracts` 非空时，每项必须包含：`id`、`kind(api/event/data/state/config)`、`owner_work_package`、非空 `producers/consumers`、`change`、`compatibility`、`migration` 和 `status(draft/confirmed)`。已批准规划中所有跨流程契约必须为 `confirmed`。

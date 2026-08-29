@@ -19,8 +19,10 @@ EVIDENCE = {
     "unresolved",
 }
 HANDOFF_TYPES = {"sync", "async", "event", "manual", "shared-state", "external"}
+ANCHOR_RELATIONS = {"precedes", "triggers", "follows"}
 M_ID = re.compile(r"M1(?:\.\d+){0,2}$")
 H_ID = re.compile(r"H[1-9]\d*$")
+N_ID = re.compile(r"N\d+(?:\.\d+)*$")
 FLOW_REF = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)/(N\d+(?:\.\d+)*)$")
 
 
@@ -81,6 +83,55 @@ def disconnected_critical_leaves(phases: list[dict], handoffs: list[dict]) -> li
     return sorted(set(leaves) - reached)
 
 
+def anchor_has_directed_path(
+    source_flow: str, target_flow: str, phases: list[dict], handoffs: list[dict]
+) -> bool:
+    phase_flows = {
+        phase.get("id"): {
+            match.group(1)
+            for ref in phase.get("flow_refs", [])
+            if isinstance(ref, str) and (match := FLOW_REF.fullmatch(ref))
+        }
+        for phase in phases
+        if isinstance(phase, dict) and isinstance(phase.get("id"), str)
+    }
+
+    def terminals(flow_id: str) -> set[str]:
+        candidates = {phase_id for phase_id, flows in phase_flows.items() if flow_id in flows}
+        return {
+            phase_id
+            for phase_id in candidates
+            if not any(other.startswith(phase_id + ".") for other in candidates)
+        }
+
+    source_nodes, target_nodes = terminals(source_flow), terminals(target_flow)
+    all_flows = set().union(*phase_flows.values()) if phase_flows else set()
+    nodes = set().union(*(terminals(flow_id) for flow_id in all_flows)) if all_flows else set()
+
+    def under(phase_id: object) -> set[str]:
+        if not isinstance(phase_id, str):
+            return set()
+        return {node for node in nodes if node == phase_id or node.startswith(phase_id + ".")}
+
+    graph = {node: set() for node in nodes}
+    for handoff in handoffs:
+        if not isinstance(handoff, dict):
+            continue
+        targets = under(handoff.get("to"))
+        for source in under(handoff.get("from")):
+            graph[source].update(targets)
+
+    reached, frontier = set(source_nodes), list(source_nodes)
+    while frontier:
+        node = frontier.pop()
+        if node in target_nodes:
+            return True
+        for target in graph.get(node, set()) - reached:
+            reached.add(target)
+            frontier.append(target)
+    return False
+
+
 def audit(contract: dict, require_frozen: bool) -> list[str]:
     errors: list[str] = []
     for field in (
@@ -123,6 +174,7 @@ def audit(contract: dict, require_frozen: bool) -> list[str]:
 
     sources = contract.get("source_flows")
     source_ids: set[str] = set()
+    source_nodes: dict[str, set[str]] = {}
     if not isinstance(sources, list) or not sources:
         errors.append("source_flows must be a non-empty array")
         sources = []
@@ -140,6 +192,15 @@ def audit(contract: dict, require_frozen: bool) -> list[str]:
         for field in ("report", "baseline"):
             if not nonempty(source.get(field)):
                 errors.append(f"source_flows[{index}].{field} must be non-empty")
+        node_ids = source.get("node_ids")
+        if not isinstance(node_ids, list) or not node_ids:
+            errors.append(f"source_flows[{index}].node_ids must be a non-empty array")
+        else:
+            invalid = [node for node in node_ids if not isinstance(node, str) or not N_ID.fullmatch(node)]
+            if invalid:
+                errors.append(f"source_flows[{index}].node_ids contains invalid IDs")
+            if isinstance(flow_id, str):
+                source_nodes[flow_id] = {node for node in node_ids if isinstance(node, str)}
     if brief_flow_ids != source_ids:
         errors.append(
             "developer_brief.included_flow_ids must equal source flow IDs; "
@@ -155,9 +216,10 @@ def audit(contract: dict, require_frozen: bool) -> list[str]:
             errors.append(f"anchor relation {index} references an unknown flow")
         if source == target:
             errors.append(f"anchor relation {index} cannot connect a flow to itself")
-        for field in ("relation", "decision_ref"):
-            if not nonempty(anchor.get(field)):
-                errors.append(f"anchor relation {index}.{field} must be non-empty")
+        if anchor.get("relation") not in ANCHOR_RELATIONS:
+            errors.append(f"anchor relation {index}.relation must be one of {sorted(ANCHOR_RELATIONS)}")
+        if not nonempty(anchor.get("decision_ref")):
+            errors.append(f"anchor relation {index}.decision_ref must be non-empty")
 
     phases = contract.get("phases")
     phase_ids: set[str] = set()
@@ -193,6 +255,8 @@ def audit(contract: dict, require_frozen: bool) -> list[str]:
                     errors.append(f"phase {phase_id} has invalid flow reference: {ref!r}")
                 elif match.group(1) not in source_ids:
                     errors.append(f"phase {phase_id} references unknown flow: {ref!r}")
+                elif match.group(2) not in source_nodes.get(match.group(1), set()):
+                    errors.append(f"phase {phase_id} references unknown source node: {ref!r}")
         evidence_status = phase.get("evidence_status")
         if evidence_status not in EVIDENCE:
             errors.append(f"phase {phase_id} has invalid evidence_status")
@@ -248,6 +312,8 @@ def audit(contract: dict, require_frozen: bool) -> list[str]:
                 errors.append(f"handoff {handoff_id} has invalid evidence reference: {ref!r}")
             elif match.group(1) not in source_ids:
                 errors.append(f"handoff {handoff_id} references unknown evidence flow: {ref!r}")
+            elif match.group(2) not in source_nodes.get(match.group(1), set()):
+                errors.append(f"handoff {handoff_id} references unknown source node: {ref!r}")
         if handoff.get("evidence_status") in {"developer-confirmed", "both-confirmed"} and not nonempty(
             handoff.get("decision_ref")
         ):
@@ -316,6 +382,18 @@ def audit(contract: dict, require_frozen: bool) -> list[str]:
                 "critical leaf phases are disconnected from the handoff graph: "
                 + ", ".join(disconnected)
             )
+        for index, anchor in enumerate(anchors):
+            if not isinstance(anchor, dict) or anchor.get("relation") not in ANCHOR_RELATIONS:
+                continue
+            source, target = anchor.get("from_flow"), anchor.get("to_flow")
+            if anchor.get("relation") == "follows":
+                source, target = target, source
+            if (
+                isinstance(source, str)
+                and isinstance(target, str)
+                and not anchor_has_directed_path(source, target, phases, handoffs)
+            ):
+                errors.append(f"anchor relation {index} is not supported by a directed handoff path")
     return errors
 
 

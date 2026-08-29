@@ -39,8 +39,8 @@
     "decision_ref": "<conversation or decision-log reference>"
   },
   "source_flows": [
-    {"flow_id": "order-create", "report": "<path>", "baseline": "<commit/version>"},
-    {"flow_id": "order-pay", "report": "<path>", "baseline": "<commit/version>"}
+    {"flow_id": "order-create", "report": "<path>", "baseline": "<commit/version>", "node_ids": ["N1", "N1.2"]},
+    {"flow_id": "order-pay", "report": "<path>", "baseline": "<commit/version>", "node_ids": ["N1"]}
   ],
   "phases": [
     {
@@ -75,9 +75,9 @@
 }
 ```
 
-`status` 只用 `draft / developer-review / frozen / superseded`。`critical` 表示达到 brief.end 或决定声明结果/状态所必需；每个 phase 和 handoff 都必须显式给出。冻结时仍为 `inferred/unresolved` 的非关键项必须提供 `noncritical_reason`。`approval` 只记录已发生的明确决定。
+`status` 只用 `draft / developer-review / frozen / superseded`。锚点 `relation` 只用 `precedes / triggers / follows`，冻结时必须存在同方向 `H` 路径。`critical` 表示达到 brief.end 或决定声明结果/状态所必需；每个 phase 和 handoff 都必须显式给出。冻结时仍为 `inferred/unresolved` 的非关键项必须提供 `noncritical_reason`。`approval` 只记录已发生的明确决定。
 
-phase 与 handoff 使用相同证据状态。`code-confirmed/both-confirmed` phase 必须有严格的 `<flow_id>/N<level>` 引用；`developer-confirmed/both-confirmed` phase 必须有 `decision_ref`。冻结时关键 phase 不得为 `inferred/unresolved`。
+phase 与 handoff 使用相同证据状态。`source_flows.node_ids` 必须从来源报告逐项提取；所有 `<flow_id>/N<level>` 引用都必须命中该清单。`code-confirmed/both-confirmed` phase 必须有代码引用；`developer-confirmed/both-confirmed` phase 必须有 `decision_ref`。冻结时关键 phase 不得为 `inferred/unresolved`。
 
 ## `decision-log.md`
 

@@ -1,2 +1,4 @@
 00.public
 02.private
+__pycache__/
+*.py[cod]

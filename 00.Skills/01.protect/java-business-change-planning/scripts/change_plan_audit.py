@@ -94,6 +94,15 @@ def audit(plan: dict, macro: dict, require_approved: bool) -> list[str]:
         for flow in macro.get("source_flows", [])
         if isinstance(flow, dict) and nonempty(flow.get("flow_id"))
     }
+    source_nodes = {
+        flow.get("flow_id"): {
+            node for node in flow.get("node_ids", []) if isinstance(node, str)
+        }
+        for flow in macro.get("source_flows", [])
+        if isinstance(flow, dict)
+        and nonempty(flow.get("flow_id"))
+        and isinstance(flow.get("node_ids"), list)
+    }
     allowed_macro_flow_pairs = {
         (phase.get("id"), ref.split("/", 1)[0])
         for phase in macro.get("phases", [])
@@ -186,6 +195,7 @@ def audit(plan: dict, macro: dict, require_approved: bool) -> list[str]:
     package_ids: set[str] = set()
     dependencies: dict[str, list[str]] = {}
     covered: set[tuple[str, str]] = set()
+    change_owners: dict[tuple[str, str], str] = {}
     if not isinstance(packages, list):
         errors.append("work_packages must be an array")
         packages = []
@@ -250,6 +260,16 @@ def audit(plan: dict, macro: dict, require_approved: bool) -> list[str]:
                     errors.append(
                         f"work package {package_id}.change_points[{point_index}].{field} must be non-empty"
                     )
+            if nonempty(point.get("path")) and nonempty(point.get("symbol")):
+                change_key = (point["path"], point["symbol"])
+                owner = change_owners.get(change_key)
+                if owner is not None and owner != package_id:
+                    errors.append(
+                        f"change point {change_key[0]}::{change_key[1]} has multiple owners: "
+                        f"{owner}, {package_id}"
+                    )
+                else:
+                    change_owners[change_key] = package_id
             refs = point.get("evidence_refs")
             if not isinstance(refs, list):
                 errors.append(
@@ -265,6 +285,10 @@ def audit(plan: dict, macro: dict, require_approved: bool) -> list[str]:
                 if not match or match.group(1) != flow_id:
                     errors.append(
                         f"work package {package_id}.change_points[{point_index}] has invalid flow evidence: {ref!r}"
+                    )
+                elif match.group(2) not in source_nodes.get(flow_id, set()):
+                    errors.append(
+                        f"work package {package_id}.change_points[{point_index}] references unknown source node: {ref!r}"
                     )
         if isinstance(package.get("tests"), list) and not package["tests"]:
             errors.append(f"work package {package_id}.tests must be non-empty")
