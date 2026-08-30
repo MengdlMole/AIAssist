@@ -231,11 +231,21 @@ def crosscut_ids(text: str, sequence_section: str, errors: list[str]) -> set[str
 
 def validate_logs(text: str, n_ids: set[str], x_ids: set[str], errors: list[str]) -> None:
     log_section = named_section(text, r"关键日志")
+    log_headers = [
+        markdown_cells(line)
+        for line in log_section.splitlines()
+        if line.lstrip().startswith("|") and markdown_cells(line)[0] == "日志/节点"
+    ]
+    expected_front = ["日志/节点", "稳定日志内容", "代码位置", "打印条件"]
+    if log_headers and log_headers[0][:4] != expected_front:
+        errors.append("logs: first columns must be 日志/节点, 稳定日志内容, 代码位置, 打印条件")
     all_log_rows = re.findall(
         r"^\|\s*(L\d+)\s*/\s*([^|]+?)\s*\|",
         log_section,
         re.MULTILINE,
     )
+    if all_log_rows and not log_headers:
+        errors.append("logs: missing required key-log table header")
     allowed_target = re.compile(rf"^(?:{N_ID}|X\d+|边界|来源未知)$")
     log_rows: list[tuple[str, str]] = []
     for log_id, raw_target in all_log_rows:
@@ -258,6 +268,72 @@ def validate_logs(text: str, n_ids: set[str], x_ids: set[str], errors: list[str]
             errors.append(f"logs: {log_id} references missing node {target}")
         if target.startswith("X") and target not in x_ids:
             errors.append(f"logs: {log_id} references missing crosscut node {target}")
+
+
+def validate_configurations(text: str, n_ids: set[str], errors: list[str]) -> None:
+    section = named_section(text, r"配置项汇总|配置与运行时选择")
+    if not section:
+        errors.append("report: missing configuration summary section")
+        return
+    if "目标路径上未发现影响流程走向的配置项" in section:
+        if re.search(r"^\|\s*配置项名称\s*\|", section, re.MULTILINE):
+            errors.append("configurations: empty conclusion conflicts with a configuration table")
+        return
+    lines = section.splitlines()
+    header_index = -1
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = markdown_cells(line)
+        if cells and cells[0] == "配置项名称":
+            header_index = index
+            expected = [
+                "配置项名称",
+                "说明",
+                "作用",
+                "默认值",
+                "当前值（开发者填写）",
+                "关联编号（时序图/调用树）",
+                "声明/读取证据",
+            ]
+            if cells != expected:
+                errors.append("configurations: table columns do not match the required order")
+            break
+    if header_index < 0:
+        errors.append("configurations: missing required table")
+        return
+    row_count = 0
+    pending_current = False
+    for line in lines[header_index + 1 :]:
+        if not line.lstrip().startswith("|"):
+            if row_count:
+                break
+            continue
+        cells = markdown_cells(line)
+        if not cells or cells[0].startswith("---"):
+            continue
+        if len(cells) < 7:
+            errors.append("configurations: each row must contain all seven fields")
+            continue
+        row_count += 1
+        current = cells[4].strip(" `<> ")
+        pending_current = pending_current or current == "待开发者填写"
+        if current != "待开发者填写" and not re.match(r"^开发者提供[:：]", current):
+            errors.append(
+                f"configurations: {cells[0]} current value must be 待开发者填写 or 开发者提供：<值>"
+            )
+        refs = set(N_ID_PATTERN.findall(cells[5]))
+        if not refs:
+            errors.append(f"configurations: {cells[0]} must reference at least one N node")
+        missing = sorted(refs - n_ids)
+        if missing:
+            errors.append(
+                f"configurations: {cells[0]} references missing nodes: {', '.join(missing)}"
+            )
+    if row_count == 0:
+        errors.append("configurations: table has no configuration rows")
+    if pending_current and re.search(r"遍历结论：[^\n]*调用图已闭合", text):
+        errors.append("configurations: report cannot claim 调用图已闭合 while current values are pending")
 
 
 def audit(path: Path) -> list[str]:
@@ -318,6 +394,7 @@ def audit(path: Path) -> list[str]:
     validate_hierarchy(sequence_set | tree_set | table_set, errors)
     x_ids = crosscut_ids(text, sequence_section, errors)
     validate_logs(text, table_set, x_ids, errors)
+    validate_configurations(text, table_set, errors)
     if not sequence_refs:
         errors.append("sequence: no call IDs found")
     return errors

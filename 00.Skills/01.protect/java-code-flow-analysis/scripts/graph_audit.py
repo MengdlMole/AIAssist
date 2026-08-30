@@ -55,6 +55,7 @@ LOG_EVENTS = {
 LOG_TIMINGS = {"before", "after-return", "after-commit", "on-exception", "finally"}
 EXCEPTION_MECHANISMS = {"catch", "advice", "listener-error-callback", "retry-hook"}
 LOG_LEVELS = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"}
+CONFIG_CURRENT_SOURCES = {"developer-input-required", "developer-provided"}
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -233,6 +234,61 @@ def audit_log(log: Any, source: Path, errors: list[str]) -> str | None:
     return log_id
 
 
+def audit_configuration(config: Any, source: Path, errors: list[str]) -> str | None:
+    if not isinstance(config, dict):
+        fail(errors, f"{source}: configuration must be an object")
+        return None
+    fields = (
+        "name",
+        "description",
+        "effect",
+        "default_value",
+        "current_value",
+        "current_value_source",
+        "affected_node_keys",
+        "declaration_reference",
+        "read_reference",
+        "evidence",
+        "evidence_basis",
+    )
+    require_fields(config, fields, f"{source}: configuration", errors)
+    for field in (
+        "name",
+        "description",
+        "effect",
+        "default_value",
+        "current_value",
+        "declaration_reference",
+        "read_reference",
+    ):
+        if not isinstance(config.get(field), str) or not config[field].strip():
+            fail(errors, f"{source}: configuration: {field} must be a non-empty string")
+    name = config.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    current_source = config.get("current_value_source")
+    if current_source not in CONFIG_CURRENT_SOURCES:
+        fail(errors, f"{source}: configuration {name}: invalid current_value_source")
+    if current_source == "developer-input-required" and config.get("current_value") != current_source:
+        fail(
+            errors,
+            f"{source}: configuration {name}: missing developer value must use "
+            "current_value='developer-input-required'",
+        )
+    if current_source == "developer-provided" and config.get("current_value") == "developer-input-required":
+        fail(errors, f"{source}: configuration {name}: developer-provided value is missing")
+    if config.get("evidence") not in EVIDENCE:
+        fail(errors, f"{source}: configuration {name}: invalid evidence")
+    audit_evidence_basis(config.get("evidence_basis"), f"{source}: configuration {name}", errors)
+    node_keys = config.get("affected_node_keys")
+    if not isinstance(node_keys, list) or not node_keys or any(
+        not isinstance(item, str) or not item.strip() for item in node_keys
+    ):
+        fail(errors, f"{source}: configuration {name}: affected_node_keys must be non-empty strings")
+    read_reference = config.get("read_reference")
+    return f"{name}@{read_reference}" if isinstance(read_reference, str) else None
+
+
 def merge_fragments(
     paths: list[Path], require_analyzed: bool, require_closed: bool
 ) -> tuple[dict[str, Any], list[str]]:
@@ -243,6 +299,7 @@ def merge_fragments(
     coverage: list[str] = []
     frontier: list[Any] = []
     key_logs: dict[str, dict[str, Any]] = {}
+    configurations: dict[str, dict[str, Any]] = {}
     data_flows: list[Any] = []
     unresolved: list[Any] = []
 
@@ -252,7 +309,17 @@ def merge_fragments(
             continue
         require_fields(
             fragment,
-            ("root_key", "coverage", "nodes", "edges", "key_logs", "data_flows", "unresolved", "frontier"),
+            (
+                "root_key",
+                "coverage",
+                "nodes",
+                "edges",
+                "key_logs",
+                "configurations",
+                "data_flows",
+                "unresolved",
+                "frontier",
+            ),
             str(path),
             errors,
         )
@@ -306,6 +373,19 @@ def merge_fragments(
             else:
                 key_logs[log_id] = log
 
+        fragment_configs = fragment.get("configurations", [])
+        if not isinstance(fragment_configs, list):
+            fail(errors, f"{path}: configurations must be an array")
+            fragment_configs = []
+        for config in fragment_configs:
+            config_key = audit_configuration(config, path, errors)
+            if config_key is None:
+                continue
+            if config_key in configurations and configurations[config_key] != config:
+                fail(errors, f"{path}: conflicting duplicate configuration {config_key}")
+            else:
+                configurations[config_key] = config
+
         for field, target in (
             ("frontier", frontier),
             ("data_flows", data_flows),
@@ -337,6 +417,10 @@ def merge_fragments(
     for log_id, log in key_logs.items():
         if log.get("node_key") not in known_nodes:
             fail(errors, f"key_log {log_id}: unknown node_key {log.get('node_key')!r}")
+    for config_key, config in configurations.items():
+        for node_key in config.get("affected_node_keys", []):
+            if node_key not in known_nodes:
+                fail(errors, f"configuration {config_key}: unknown affected node {node_key!r}")
 
     if require_analyzed or require_closed:
         open_nodes = sorted(key for key, node in nodes.items() if node.get("state") in OPEN_STATES)
@@ -365,6 +449,17 @@ def merge_fragments(
             )
         if unresolved:
             fail(errors, f"closure audit: unresolved list is not empty ({len(unresolved)} item(s))")
+        pending_configs = sorted(
+            key
+            for key, config in configurations.items()
+            if config.get("current_value_source") == "developer-input-required"
+        )
+        if pending_configs:
+            fail(
+                errors,
+                "closure audit: developer current values are required for configurations: "
+                + ", ".join(pending_configs),
+            )
 
     merged = {
         "root_keys": sorted(set(roots)),
@@ -372,6 +467,7 @@ def merge_fragments(
         "nodes": [nodes[key] for key in sorted(nodes)],
         "edges": [edges[key] for key in sorted(edges)],
         "key_logs": [key_logs[key] for key in sorted(key_logs)],
+        "configurations": [configurations[key] for key in sorted(configurations)],
         "data_flows": data_flows,
         "unresolved": unresolved,
         "frontier": frontier,

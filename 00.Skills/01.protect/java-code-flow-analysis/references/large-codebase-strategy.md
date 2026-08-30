@@ -133,6 +133,7 @@
 - 主 agent 已完成的共享横切节点与禁止重复展开的符号清单。
 - 合理的深度或上下文预算；预算只决定何时返回 partial，不改变完成标准。
 - 必须覆盖成功、关键分支、异常、返回/数据流、日志和动态绑定。
+- 必须汇总能改变子图可达性、实现选择或结果的配置；当前值只接受开发者输入。
 - 只读约束与证据状态定义。
 - 下面的统一返回格式。
 
@@ -191,6 +192,21 @@
       "sensitive_risk": "<none or concise risk>"
     }
   ],
+  "configurations": [
+    {
+      "name": "<full configuration key>",
+      "description": "<business meaning>",
+      "effect": "<how it changes reachability, implementation or result>",
+      "default_value": "<evidenced value or unknown>",
+      "current_value": "<developer-input-required or developer-provided value>",
+      "current_value_source": "developer-input-required | developer-provided",
+      "affected_node_keys": ["<canonical key>"],
+      "declaration_reference": "<path:line or unavailable>",
+      "read_reference": "<path:line>",
+      "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
+      "evidence_basis": ["project-source"]
+    }
+  ],
   "data_flows": [],
   "unresolved": [],
   "frontier": []
@@ -198,6 +214,8 @@
 ```
 
 `evidence_basis` 至少选择一个合法值：`project-source / configuration-binding / generated-contract / framework-contract / runtime-evidence`。`exception_mechanism` 仅在 `timing=on-exception` 时必填，其他时点省略。
+
+`configurations` 只收录改变流程走向的配置。`current_value_source=developer-input-required` 时，`current_value` 必须固定为同名占位；不得把源码默认值、仓库配置或环境变量表达式当作当前运行值。主 agent 合并后将 `affected_node_keys` 转成最终 `N` 编号。
 
 子 agent 不分配最终 `N` 编号、不修改最终文档、不新增枚举值、不把推断改写成事实。若发现代码缺陷，只在它改变本子图控制/数据语义时用一句事实描述，不继续扩展审计。若发现范围外的新子图，只登记到 frontier，不自行无限追踪。默认保持单层委派；只有协调者明确给出命名空间和合并协议时才继续递归委派。上下文或时间预算耗尽时必须返回 `partial`、已覆盖调用点、未完成 frontier 和下一步，不得返回 `expanded`。
 
@@ -212,7 +230,7 @@
 3. 领取任务前将节点原子地标为 claimed；合并后将新发现节点加入 frontier，并更新 expanded、partial、boundary、unresolved 等状态，避免不同 agent 重复领取。
 4. 对重复读取的共享节点保留证据更强、范围更完整的结果，不拼接矛盾摘要。
 5. 重新计算下一波优先级；在账本合并前不派发依赖上一波结果的新任务。
-6. 独立复核所有高影响负面结论，尤其是“无事务、无日志、无实际实现、无消费者、无异常处理”。缺少搜索范围和证据的负面结论一律降为 unknown。
+6. 独立复核所有高影响负面结论，尤其是“无事务、无日志、无流程配置、无实际实现、无消费者、无异常处理”。缺少搜索范围和证据的负面结论一律降为 unknown。
 
 上下文紧张时，主 agent只保留 scope、节点/边摘要、frontier 和未决冲突在当前上下文中；详细代码摘录留在检查点，需要裁决时再读取源文件，不复制所有子 agent 长篇说明。
 
@@ -236,6 +254,7 @@
 - 每个 expanded 方法内的相关调用点都有对应边或明确分类。
 - 每个关键条件分支、异常出口和返回路径均有去向。
 - 接口多实现、配置路由、反射与 AOP 已解析，或作为 unresolved 列出候选、影响和验证方式。
+- 所有改变流程走向的配置已汇总并关联节点；缺少当前值时已覆盖候选路径并标明实际选择未知。
 - 异步/MQ 边已连接到消费者，或明确停在无法证明的边界。
 - 循环、递归和重入以回边表达，不造成无限展开。
 - 控制流与数据/返回流能够互相解释，关键日志已映射到稳定节点。

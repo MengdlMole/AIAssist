@@ -85,17 +85,27 @@
 
 | 字段 | 内容 |
 | --- | --- |
-| 标识与位置 | `L1`、关联节点、`path:line · symbol` |
-| 来源与级别 | code/aspect/filter/interceptor/wrapper；TRACE/DEBUG/INFO/WARN/ERROR |
-| 事件与时点 | 事件只用 arrival/decision/handoff/external-result/state-change/failure；时点只用 before/after-return/after-commit/on-exception/finally，并写相对对象；on-exception 补处理机制 |
-| 模板与字段 | 稳定模板、traceId/requestId/业务主键等关联字段 |
+| 标识与节点 | `L1`、关联 `N/X/边界/来源未知` |
+| 日志内容 | 源码稳定模板；变量只写占位含义 |
+| 代码位置 | `path:line · symbol` |
 | 打印条件 | 代码分支 + 已知运行配置；未知配置显式标注 |
+| 事件与时点 | 事件只用 arrival/decision/handoff/external-result/state-change/failure；时点只用 before/after-return/after-commit/on-exception/finally，并写相对对象；on-exception 补处理机制 |
 | 诊断含义 | 能证明什么 / 不能证明什么 |
+| 关联字段 | traceId/requestId/业务主键等；没有则写“无” |
+| 来源与级别 | code/aspect/filter/interceptor/wrapper；TRACE/DEBUG/INFO/WARN/ERROR |
 | 证据与风险 | 代码/运行/推断/未知；敏感或高基数字段风险 |
 
 完整 token、密码、证件号、银行卡号、密钥和未脱敏请求体不得复制到文档。实际日志、框架日志和建议日志严格分区；没有符合条件的日志时写“目标路径上未发现符合标准的现有关键日志”。仅当用户关注日志完备性时输出可观测性缺口建议。
 
-## 5. 动态验证与停止
+## 5. 流程配置项标准
+
+只汇总能改变当前场景调用可达性、实现选择、关键分支、重试/降级、异步交接或最终结果的配置；连接池大小、展示文案等不改变流程的普通配置不收录。
+
+每项必须记录：完整配置名、说明、对流程的具体作用、有证据的默认值、当前值、关联 `N` 编号，以及声明/读取位置。默认值未知时写“未知”，不得凭经验补写框架默认值。当前值只能写“待开发者填写”或“开发者提供：<值>”；仓库配置、环境变量占位符和默认值都不能冒充运行时当前值。敏感值只记录“开发者提供：已配置（已脱敏）”。
+
+缺少当前值且候选值会进入实质不同路径时，列出候选路径并把运行时选择标为未知；这不妨碍完成静态范围分析，但不得宣称调用图已闭合。未发现相关配置时明确写“目标路径上未发现影响流程走向的配置项”。
+
+## 6. 动态验证与停止
 
 默认静态分析。只有用户授权且现有测试能安全、局部验证时才运行；不要自动启动依赖真实数据库、消息系统或外部服务的应用。一次运行未出现某分支不能证明其不可达。
 
