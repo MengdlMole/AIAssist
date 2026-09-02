@@ -83,7 +83,7 @@
 | evidence_summary | 一句话记录绑定依据、关键参数事实或异常传播；未知时说明所缺证据 |
 | evidence_basis | project-source、configuration-binding、generated-contract、framework-contract、runtime-evidence，可多选 |
 
-进入 Mapper/Repository 或数据库边界且会执行 SQL 的调用边使用 `type=db`；完成态下每条 `db` 边必须能在其调用方或目标节点找到对应 `database_operations`，不能仅登记方法名。
+进入 Mapper/Repository 或数据库边界且会执行 SQL 的调用边使用 `type=db`；每项 `database_operations.edge_id` 必须精确引用该边，完成态下每条 `db` 边至少有一项操作，不能靠“同节点存在任意数据库操作”代替映射。
 
 最终展示编号由主 agent 在图合并、折叠和树结构稳定后统一分配：根为 `N1`，直接子调用为 `N1.1`、`N1.2`，下一层按路径扩展。同一方法可共享规范节点，但每个 `<规范符号键>@<incoming edge_id>[context]` 调用身份分别编号；循环/递归使用 `↩ <已有编号>` 回指。横切共享节点若由框架拦截或分派而非普通直接调用，使用独立 `X` 编号，不伪装成 `N` 的子调用。子 agent 只返回规范符号键、edge_id、上下文和一句业务动作，不分配展示编号。
 
@@ -177,6 +177,7 @@
   "database_operations": [
     {
       "operation_id": "<stable SQL/callsite + table id>",
+      "edge_id": "<matching db edge id>",
       "node_key": "<canonical key of the direct DB operation>",
       "table": "<schema.table or unresolved:expression>",
       "operation": "SELECT | SELECT_LOCK | INSERT | UPDATE | DELETE | UPSERT | MERGE | CALL",
@@ -236,19 +237,19 @@
 
 `evidence_basis` 至少选择一个合法值：`project-source / configuration-binding / generated-contract / framework-contract / runtime-evidence`。`exception_mechanism` 仅在 `timing=on-exception` 时必填，其他时点省略。
 
-`database_operations` 对每个实际表逐项记录；JOIN/子查询多表拆项，软删除使用 `UPDATE`。无法解析动态表名时以 `unresolved:` 开头并同步加入 `unresolved`。主 agent 将 `node_key` 转成最终 `N`，在时序图和调用树的直接节点附 `[DB <OP> <table>]`，不向祖先传播。
+`database_operations` 对每个实际表逐项记录；JOIN/子查询多表拆项，软删除使用 `UPDATE`。`edge_id` 必须指向实际 `db` 边；同一节点、同类操作、同一表发生多次时仍以不同 `operation_id/edge_id` 保留。无法解析动态表名时以 `unresolved:` 开头并同步加入 `unresolved`。主 agent 将 `operation_id` 映射为 `D1...`、将 `node_key` 转成最终 `N`，并在时序图和调用树的直接节点附 `[DB <D-ID> <OP> <table>]`，不向祖先传播。
 
 `configurations` 只收录改变流程走向的配置。`current_value_source=developer-input-required` 时，`current_value` 必须固定为同名占位；不得把源码默认值、仓库配置或环境变量表达式当作当前运行值。主 agent 合并后将 `affected_node_keys` 转成最终 `N` 编号。
 
 子 agent 不分配最终 `N` 编号、不修改最终文档、不新增枚举值、不把推断改写成事实。若发现代码缺陷，只在它改变本子图控制/数据语义时用一句事实描述，不继续扩展审计。若发现范围外的新子图，只登记到 frontier，不自行无限追踪。默认保持单层委派；只有协调者明确给出命名空间和合并协议时才继续递归委派。上下文或时间预算耗尽时必须返回 `partial`、已覆盖调用点、未完成 frontier 和下一步，不得返回 `expanded`。
 
-主 agent 将 JSON 增量保存到临时目录并使用 [scripts/graph_audit.py](../scripts/graph_audit.py) 合并校验。静态范围分析使用 `--require-analyzed`；只有要求调用图完全闭合时使用 `--require-closed`。非法枚举、缺字段、重复 edge/log id、缺失根节点或悬空边必须修正后再合并。脚本只验证结构，主 agent 仍须复核源码证据和动态绑定。
+主 agent 将 JSON 增量保存到临时目录并使用 [scripts/graph_audit.py](../scripts/graph_audit.py) 合并校验。单根可自动识别入口；多片段/多根必须传 `--entry-root '<入口规范键>'`。静态范围分析使用 `--require-analyzed`；只有要求调用图完全闭合时使用 `--require-closed`。脚本会检查入口可达性和 `db edge ↔ database_operations` 映射；主 agent 仍须复核源码证据、动态绑定及 Mermaid participant 的语义方向。
 
 ## 5. 主 agent 合并协议
 
 每一波完成后，主 agent：
 
-1. 以规范符号键合并节点，以 edge_id/调用点合并边；同一调用边证据冲突时保留两种结论并回读源码裁决。
+1. 以规范符号键合并节点，以 edge_id/调用点合并边；允许同一节点从 `discovered -> claimed -> partial -> 终态` 被更完整片段替换，终态或代码符号冲突必须回读源码裁决。
 2. 检查子图根节点能否从入口已有边连续到达，终点是否正确接回全局图。
 3. 领取任务前将节点原子地标为 claimed；合并后将新发现节点加入 frontier，并更新 expanded、partial、boundary、unresolved 等状态，避免不同 agent 重复领取。
 4. 对重复读取的共享节点保留证据更强、范围更完整的结果，不拼接矛盾摘要。

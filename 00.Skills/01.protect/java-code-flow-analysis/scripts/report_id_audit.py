@@ -20,7 +20,10 @@ MERMAID_SHORT_SYMBOL = (
 )
 FENCE_PATTERN = re.compile(r"```(?P<kind>\w+)\s*\n(?P<body>.*?)```", re.DOTALL)
 DB_OPERATION = r"(?:SELECT_LOCK|SELECT|INSERT|UPDATE|DELETE|UPSERT|MERGE|CALL)"
-DB_ANNOTATION_PATTERN = re.compile(rf"\[DB\s+({DB_OPERATION})\s+([A-Za-z0-9_$.*:-]+)\]")
+DB_OPERATION_ID = r"D\d+"
+DB_ANNOTATION_PATTERN = re.compile(
+    rf"\[DB\s+({DB_OPERATION_ID})\s+({DB_OPERATION})\s+([A-Za-z0-9_$.*:{{}}-]+)\]"
+)
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,7 @@ def tree_records(section: str, errors: list[str]) -> tuple[list[str], dict[str, 
     for fence in FENCE_PATTERN.finditer(section):
         if fence.group("kind").lower() != "text":
             continue
+        visible_stack: list[tuple[int, str]] = []
         for line in fence.group("body").splitlines():
             label = label_pattern.match(line)
             if not label:
@@ -122,6 +126,49 @@ def tree_records(section: str, errors: list[str]) -> tuple[list[str], dict[str, 
             else:
                 symbols[node_id] = symbol.group(0)
     return ids, symbols
+
+
+def normalize_action(value: str) -> str:
+    value = DB_ANNOTATION_PATTERN.sub("", value)
+    value = re.sub(r"\s*[；;]\s*context=[^；;]+\s*$", "", value)
+    return re.sub(r"\s+", " ", value.strip(" `<> "))
+
+
+def sequence_actions(section: str) -> dict[str, str]:
+    actions: dict[str, str] = {}
+    pattern = re.compile(
+        rf":\s*({N_ID})\s+(.+?)\s+·\s+({MERMAID_SHORT_SYMBOL})\s*$"
+    )
+    for fence in FENCE_PATTERN.finditer(section):
+        if fence.group("kind").lower() != "mermaid" or "sequenceDiagram" not in fence.group("body"):
+            continue
+        for line in fence.group("body").splitlines():
+            match = pattern.search(line)
+            if match:
+                actions[match.group(1)] = normalize_action(match.group(2))
+    return actions
+
+
+def tree_actions(section: str) -> dict[str, str]:
+    actions: dict[str, str] = {}
+    node_pattern = re.compile(
+        rf"^[\s│]*(?:(?:├──|└──)\s*)?(?:~~异步~~>\s*)?({N_ID})(?![\d.])"
+    )
+    for fence in FENCE_PATTERN.finditer(section):
+        if fence.group("kind").lower() != "text":
+            continue
+        for line in fence.group("body").splitlines():
+            node_match = node_pattern.match(line)
+            if not node_match:
+                continue
+            symbol_match = SHORT_SYMBOL_PATTERN.search(line[node_match.end() :])
+            if not symbol_match:
+                continue
+            tail = line[node_match.end() + symbol_match.end() :]
+            action_match = re.search(r"\s+[—-]\s+(.+?)(?:\s+\{[^{}]*\})?\s*$", tail)
+            if action_match:
+                actions[node_match.group(1)] = normalize_action(action_match.group(1))
+    return actions
 
 
 def node_table_records(section: str, errors: list[str]) -> tuple[list[str], dict[str, NodeIdentity]]:
@@ -153,12 +200,18 @@ def node_table_records(section: str, errors: list[str]) -> tuple[list[str], dict
         node_id = cells[0]
         ids.append(node_id)
         identity_cell, parent_cell = cells[1], cells[2]
-        symbol_match = SHORT_SYMBOL_PATTERN.search(identity_cell)
+        context_match = re.search(r"[；;]\s*context=([^；;]+)\s*$", identity_cell) or re.search(
+            r"[；;]\s*context=([^；;]+)\s*$", parent_cell
+        )
+        context = context_match.group(1).strip(" `<> ") if context_match else ""
+        identity_base = re.sub(r"\s*[；;]\s*context=[^；;]+\s*$", "", identity_cell)
+        parent_base = re.sub(r"\s*[；;]\s*context=[^；;]+\s*$", "", parent_cell)
+        symbol_match = SHORT_SYMBOL_PATTERN.search(identity_base)
         if not symbol_match:
             errors.append(f"node table: {node_id} lacks Class#method in identity column")
             continue
         symbol = symbol_match.group(0)
-        action_parts = re.split(r"\s+[—-]\s+", identity_cell, maxsplit=1)
+        action_parts = re.split(r"\s+[—-]\s+", identity_base, maxsplit=1)
         action = action_parts[1].strip(" `<> ") if len(action_parts) == 2 else ""
         if not action:
             errors.append(f"node table: {node_id} lacks a readable business action")
@@ -168,18 +221,18 @@ def node_table_records(section: str, errors: list[str]) -> tuple[list[str], dict
             if "根" not in parent_cell:
                 errors.append("node table: N1 parent must be 根")
         else:
-            parent_match = N_ID_PATTERN.search(parent_cell)
+            parent_match = N_ID_PATTERN.search(parent_base)
             parent = parent_match.group(0) if parent_match else None
             expected_parent = node_id.rsplit(".", 1)[0]
             if parent != expected_parent:
                 errors.append(
                     f"node table: {node_id} parent must be {expected_parent}; got {parent or 'missing'}"
                 )
-        callsite_source = re.sub(r"^根\s*[；;]?", "", parent_cell) if node_id == "N1" else parent_cell
+        callsite_source = re.sub(r"^根\s*[；;]?", "", parent_base) if node_id == "N1" else parent_base
         callsite = N_ID_PATTERN.sub("", callsite_source, count=1).strip(" `；;，,<> ")
         if not callsite:
             errors.append(f"node table: {node_id} lacks entry binding/callsite")
-        occurrence_key = f"{symbol}@{callsite}"
+        occurrence_key = f"{symbol}@{callsite}[{context}]"
         if occurrence_key in occurrence_keys:
             errors.append(
                 f"node table: duplicate call identity for {occurrence_keys[occurrence_key]} and {node_id}"
@@ -210,6 +263,48 @@ def validate_hierarchy(ids: set[str], errors: list[str]) -> None:
             errors.append(f"hierarchy: children of {parent} must be contiguous from 1; got {actual}")
 
 
+def validate_tree_layout(section: str, errors: list[str]) -> None:
+    pattern = re.compile(
+        rf"^(?P<prefix>[\s│]*)(?:(?P<connector>├──|└──)\s*)?"
+        rf"(?:~~异步~~>\s*)?(?P<id>{N_ID})(?![\d.])"
+    )
+    for fence in FENCE_PATTERN.finditer(section):
+        if fence.group("kind").lower() != "text":
+            continue
+        for line in fence.group("body").splitlines():
+            match = pattern.match(line)
+            if not match:
+                continue
+            node_id = match.group("id")
+            connector = match.group("connector")
+            if node_id == "N1":
+                if connector or match.group("prefix"):
+                    errors.append("tree layout: N1 must be the unindented visible root")
+                visible_stack = [(0, node_id)]
+                continue
+            if not connector:
+                errors.append(f"tree layout: {node_id} must use a tree connector")
+                continue
+            depth = node_id.count(".") + 1
+            visible_indent = len(match.group("prefix").expandtabs(4))
+            minimum_indent = 4 * max(0, depth - 2)
+            if visible_indent < minimum_indent:
+                errors.append(
+                    f"tree layout: {node_id} is too shallow for its encoded hierarchy"
+                )
+            content_column = visible_indent + 4
+            while visible_stack and visible_stack[-1][0] >= content_column:
+                visible_stack.pop()
+            actual_parent = visible_stack[-1][1] if visible_stack else None
+            encoded_parent = node_id.rsplit(".", 1)[0]
+            if actual_parent != encoded_parent:
+                errors.append(
+                    f"tree layout: {node_id} is visually under "
+                    f"{actual_parent or 'no parent'}, expected {encoded_parent}"
+                )
+            visible_stack.append((content_column, node_id))
+
+
 def crosscut_ids(text: str, sequence_section: str, errors: list[str]) -> set[str]:
     crosscut_section = named_heading_section(text, r"横切链|横切前置链")
     rows = re.findall(r"^\|\s*(X\d+)\s*\|\s*([^|]+)\|", crosscut_section, re.MULTILINE)
@@ -238,9 +333,18 @@ def validate_logs(text: str, n_ids: set[str], x_ids: set[str], errors: list[str]
         for line in log_section.splitlines()
         if line.lstrip().startswith("|") and markdown_cells(line)[0] == "日志/节点"
     ]
-    expected_front = ["日志/节点", "稳定日志内容", "代码位置", "打印条件"]
-    if log_headers and log_headers[0][:4] != expected_front:
-        errors.append("logs: first columns must be 日志/节点, 稳定日志内容, 代码位置, 打印条件")
+    expected_headers = [
+        "日志/节点",
+        "稳定日志内容",
+        "代码位置",
+        "打印条件",
+        "事件/时点",
+        "能证明 / 不能证明",
+        "关联字段",
+        "来源/级别/证据与风险",
+    ]
+    if log_headers and log_headers[0] != expected_headers:
+        errors.append("logs: key-log table columns do not match the required order")
     all_log_rows = re.findall(
         r"^\|\s*(L\d+)\s*/\s*([^|]+?)\s*\|",
         log_section,
@@ -248,6 +352,32 @@ def validate_logs(text: str, n_ids: set[str], x_ids: set[str], errors: list[str]
     )
     if all_log_rows and not log_headers:
         errors.append("logs: missing required key-log table header")
+    none_found = "目标路径上未发现符合关键日志标准的现有日志" in log_section
+    if none_found and all_log_rows:
+        errors.append("logs: empty conclusion conflicts with key-log rows")
+    if not none_found and not all_log_rows:
+        errors.append("logs: require at least one key-log row or the explicit empty conclusion")
+    for line in log_section.splitlines():
+        if not re.match(r"^\|\s*L\d+\s*/", line):
+            continue
+        cells = markdown_cells(line)
+        if len(cells) != 8:
+            errors.append("logs: each key-log row must contain all eight fields")
+            continue
+        if any(not cell.strip(" `<> ") for cell in cells):
+            errors.append(f"logs: {cells[0]} contains empty required fields")
+        if not re.search(
+            r"\b(?:arrival|decision|handoff|external-result|state-change|failure)\b", cells[4]
+        ) or not re.search(
+            r"\b(?:before|after-return|after-commit|on-exception|finally)\b", cells[4]
+        ):
+            errors.append(f"logs: {cells[0]} requires a valid event and timing")
+        if not re.search(r"\S+\s*/\s*\S+", cells[5]):
+            errors.append(f"logs: {cells[0]} must state proves / does-not-prove")
+        if not re.search(r"\b(?:code|aspect|filter|interceptor|wrapper)\b", cells[7]) or not re.search(
+            r"\b(?:TRACE|DEBUG|INFO|WARN|ERROR)\b", cells[7]
+        ) or not re.search(r"代码已证实|运行已证实|推断|未知", cells[7]):
+            errors.append(f"logs: {cells[0]} requires source, level and evidence status")
     allowed_target = re.compile(rf"^(?:{N_ID}|X\d+|边界|来源未知)$")
     log_rows: list[tuple[str, str]] = []
     for log_id, raw_target in all_log_rows:
@@ -314,10 +444,12 @@ def validate_configurations(text: str, n_ids: set[str], errors: list[str]) -> No
         cells = markdown_cells(line)
         if not cells or cells[0].startswith("---"):
             continue
-        if len(cells) < 7:
+        if len(cells) != 7:
             errors.append("configurations: each row must contain all seven fields")
             continue
         row_count += 1
+        if any(not cell.strip(" `<> ") for cell in cells[:7]):
+            errors.append(f"configurations: {cells[0]} contains empty required fields")
         current = cells[4].strip(" `<> ")
         pending_current = pending_current or current == "待开发者填写"
         if current != "待开发者填写" and not re.match(r"^开发者提供[:：]", current):
@@ -338,8 +470,8 @@ def validate_configurations(text: str, n_ids: set[str], errors: list[str]) -> No
         errors.append("configurations: report cannot claim 调用图已闭合 while current values are pending")
 
 
-def database_annotations(section: str, kind: str) -> list[tuple[str, str, str]]:
-    records: list[tuple[str, str, str]] = []
+def database_annotations(section: str, kind: str) -> list[tuple[str, str, str, str]]:
+    records: list[tuple[str, str, str, str]] = []
     for fence in FENCE_PATTERN.finditer(section):
         if fence.group("kind").lower() != kind:
             continue
@@ -357,8 +489,8 @@ def database_annotations(section: str, kind: str) -> list[tuple[str, str, str]]:
                 )
             if not node_match:
                 continue
-            for operation, table in DB_ANNOTATION_PATTERN.findall(line):
-                records.append((node_match.group(1), operation, table))
+            for operation_id, operation, table in DB_ANNOTATION_PATTERN.findall(line):
+                records.append((operation_id, node_match.group(1), operation, table))
     return records
 
 
@@ -379,13 +511,14 @@ def validate_database_operations(
     if none_found:
         if sequence_records or tree_records_found:
             errors.append("database: empty conclusion conflicts with DB annotations")
-        if re.search(r"^\|\s*节点\s*\|\s*表\s*\|", section, re.MULTILINE):
+        if re.search(r"^\|\s*操作ID\s*\|\s*节点\s*\|", section, re.MULTILINE):
             errors.append("database: empty conclusion conflicts with operation table")
         return
 
     lines = section.splitlines()
     header_index = -1
     expected = [
+        "操作ID",
         "节点",
         "表",
         "操作",
@@ -399,7 +532,7 @@ def validate_database_operations(
         if not line.lstrip().startswith("|"):
             continue
         cells = markdown_cells(line)
-        if cells and cells[0] == "节点" and len(cells) > 1 and cells[1] == "表":
+        if cells and cells[0] == "操作ID" and len(cells) > 2 and cells[1] == "节点":
             header_index = index
             if cells != expected:
                 errors.append("database: operation table columns do not match the required order")
@@ -408,7 +541,7 @@ def validate_database_operations(
         errors.append("database: missing required operation table")
         return
 
-    summary_records: list[tuple[str, str, str]] = []
+    summary_records: list[tuple[str, str, str, str]] = []
     for line in lines[header_index + 1 :]:
         if not line.lstrip().startswith("|"):
             if summary_records:
@@ -417,33 +550,47 @@ def validate_database_operations(
         cells = markdown_cells(line)
         if not cells or cells[0].startswith("---"):
             continue
-        if len(cells) < 8:
-            errors.append("database: each operation row must contain all eight fields")
+        if len(cells) != 9:
+            errors.append("database: each operation row must contain all nine fields")
             continue
-        node = cells[0].strip(" `<> ")
-        table = cells[1].strip(" `<> ")
-        operation = cells[2].strip(" `<> ")
+        operation_id = cells[0].strip(" `<> ")
+        node = cells[1].strip(" `<> ")
+        table = cells[2].strip(" `<> ")
+        operation = cells[3].strip(" `<> ")
+        if not re.fullmatch(DB_OPERATION_ID, operation_id):
+            errors.append(f"database: invalid operation ID {operation_id!r}")
         if node not in n_ids:
             errors.append(f"database: operation row references missing node {node!r}")
         if not re.fullmatch(DB_OPERATION, operation):
             errors.append(f"database: {node}/{table} has invalid operation {operation!r}")
         if not table:
             errors.append(f"database: {node} has an empty table name")
-        if any(not cells[index].strip(" `<> ") for index in range(3, 8)):
+        if any(not cells[index].strip(" `<> ") for index in range(4, 9)):
             errors.append(f"database: {node}/{table} has empty operation details")
-        core_value = cells[7].strip(" `<> ")
+        core_value = cells[8].strip(" `<> ")
         if not re.match(r"^(?:核心|辅助)[；;：:].+$", core_value):
             errors.append(f"database: {node}/{table} core classification requires 核心/辅助 and reason")
-        summary_records.append((node, operation, table))
+        summary_records.append((operation_id, node, operation, table))
 
     if not summary_records:
         errors.append("database: operation table has no rows")
         return
+    if re.search(r"遍历结论：[^\n]*调用图已闭合", text) and any(
+        table.startswith("unresolved:") for _, _, _, table in summary_records
+    ):
+        errors.append("database: report cannot claim 调用图已闭合 with unresolved tables")
     for label, records in (
         ("sequence", sequence_records),
         ("tree", tree_records_found),
         ("summary", summary_records),
     ):
+        duplicate_ids = sorted(
+            operation_id
+            for operation_id, count in Counter(record[0] for record in records).items()
+            if count != 1
+        )
+        if duplicate_ids:
+            errors.append(f"database: duplicate {label} operation IDs: {duplicate_ids}")
         duplicates = sorted(item for item, count in Counter(records).items() if count != 1)
         if duplicates:
             errors.append(f"database: duplicate {label} annotations: {duplicates}")
@@ -489,6 +636,8 @@ def audit(path: Path) -> list[str]:
     validate_mermaid_entities(text, errors)
     sequence_refs, sequence_symbols = sequence_records(sequence_section, errors)
     tree_ids, tree_symbols = tree_records(tree_section, errors)
+    sequence_action_map = sequence_actions(sequence_section)
+    tree_action_map = tree_actions(tree_section)
     table_ids, node_records = node_table_records(node_section, errors)
 
     for label, ids in (("tree", tree_ids), ("node table", table_ids)):
@@ -518,8 +667,20 @@ def audit(path: Path) -> list[str]:
             )
         if tree_symbols.get(node_id) != record.symbol:
             errors.append(f"identity: {node_id} tree symbol {tree_symbols.get(node_id)!r} != {record.symbol!r}")
+        expected_action = normalize_action(record.action)
+        if sequence_action_map.get(node_id) != expected_action:
+            errors.append(
+                f"identity: {node_id} sequence action {sequence_action_map.get(node_id)!r} "
+                f"!= {expected_action!r}"
+            )
+        if tree_action_map.get(node_id) != expected_action:
+            errors.append(
+                f"identity: {node_id} tree action {tree_action_map.get(node_id)!r} "
+                f"!= {expected_action!r}"
+            )
 
     validate_hierarchy(sequence_set | tree_set | table_set, errors)
+    validate_tree_layout(tree_section, errors)
     x_ids = crosscut_ids(text, sequence_section, errors)
     validate_logs(text, table_set, x_ids, errors)
     validate_configurations(text, table_set, errors)

@@ -296,6 +296,7 @@ def audit_database_operation(operation: Any, source: Path, errors: list[str]) ->
         return None
     fields = (
         "operation_id",
+        "edge_id",
         "node_key",
         "table",
         "operation",
@@ -317,6 +318,7 @@ def audit_database_operation(operation: Any, source: Path, errors: list[str]) ->
         fail(errors, f"{source}: database_operation operation_id must be non-empty")
         return None
     for field in (
+        "edge_id",
         "node_key",
         "table",
         "business_purpose",
@@ -346,8 +348,31 @@ def audit_database_operation(operation: Any, source: Path, errors: list[str]) ->
     return operation_id
 
 
+def merge_node(
+    existing: dict[str, Any], incoming: dict[str, Any], source: Path, errors: list[str]
+) -> dict[str, Any]:
+    """Accept skeleton-to-detail progression while rejecting contradictory facts."""
+    if existing == incoming:
+        return existing
+    key = str(existing.get("key"))
+    if existing.get("file_symbol") != incoming.get("file_symbol"):
+        fail(errors, f"{source}: conflicting file_symbol for node {key}")
+        return existing
+    rank = {"discovered": 0, "claimed": 1, "partial": 2}
+    old_state, new_state = existing.get("state"), incoming.get("state")
+    old_rank = rank.get(old_state, 3)
+    new_rank = rank.get(new_state, 3)
+    if old_rank == new_rank:
+        fail(errors, f"{source}: conflicting duplicate node key {key}")
+        return existing
+    if old_rank == 3 or new_rank == 3:
+        terminal = existing if old_rank == 3 else incoming
+        return terminal
+    return incoming if new_rank > old_rank else existing
+
+
 def merge_fragments(
-    paths: list[Path], require_analyzed: bool, require_closed: bool
+    paths: list[Path], require_analyzed: bool, require_closed: bool, entry_root: str | None = None
 ) -> tuple[dict[str, Any], list[str]]:
     errors: list[str] = []
     nodes: dict[str, dict[str, Any]] = {}
@@ -401,10 +426,7 @@ def merge_fragments(
             key = audit_node(node, path, errors)
             if key is None:
                 continue
-            if key in nodes and nodes[key] != node:
-                fail(errors, f"{path}: conflicting duplicate node key {key}")
-            else:
-                nodes[key] = node
+            nodes[key] = merge_node(nodes[key], node, path, errors) if key in nodes else node
 
         fragment_edges = fragment.get("edges", [])
         if not isinstance(fragment_edges, list):
@@ -486,16 +508,52 @@ def merge_fragments(
             if not isinstance(target, str) or not target.startswith(expected_prefix):
                 fail(errors, f"edge {edge_id}: {resolution} target must start with '{expected_prefix}'")
 
+    effective_entry_root = entry_root
+    if require_analyzed or require_closed:
+        unique_roots = sorted(set(roots))
+        if effective_entry_root is None:
+            if len(unique_roots) == 1:
+                effective_entry_root = unique_roots[0]
+            else:
+                fail(errors, "analysis audit: multiple fragment roots require --entry-root")
+        if effective_entry_root not in known_nodes:
+            fail(errors, f"analysis audit: entry root {effective_entry_root!r} is not a known node")
+        else:
+            reachable = {effective_entry_root}
+            changed = True
+            while changed:
+                changed = False
+                for edge in edges.values():
+                    if (
+                        edge.get("resolution_status") == "resolved"
+                        and edge.get("from") in reachable
+                        and edge.get("to") in known_nodes
+                        and edge.get("to") not in reachable
+                    ):
+                        reachable.add(edge["to"])
+                        changed = True
+            orphan_nodes = sorted(known_nodes - reachable)
+            if orphan_nodes:
+                fail(errors, "analysis audit: nodes unreachable from entry root: " + ", ".join(orphan_nodes))
+
     for log_id, log in key_logs.items():
         if log.get("node_key") not in known_nodes:
             fail(errors, f"key_log {log_id}: unknown node_key {log.get('node_key')!r}")
-    db_nodes: set[str] = set()
+    covered_db_edges: set[str] = set()
     for operation_id, operation in database_operations.items():
         node_key = operation.get("node_key")
         if node_key not in known_nodes:
             fail(errors, f"database_operation {operation_id}: unknown node_key {node_key!r}")
-        elif isinstance(node_key, str):
-            db_nodes.add(node_key)
+        edge_id = operation.get("edge_id")
+        edge = edges.get(edge_id)
+        if edge is None:
+            fail(errors, f"database_operation {operation_id}: unknown edge_id {edge_id!r}")
+        elif edge.get("type") != "db":
+            fail(errors, f"database_operation {operation_id}: edge {edge_id} is not type db")
+        elif node_key not in {edge.get("from"), edge.get("to")}:
+            fail(errors, f"database_operation {operation_id}: node_key is not on edge {edge_id}")
+        else:
+            covered_db_edges.add(str(edge_id))
     for config_key, config in configurations.items():
         for node_key in config.get("affected_node_keys", []):
             if node_key not in known_nodes:
@@ -510,10 +568,7 @@ def merge_fragments(
         if any(item != "expanded" for item in coverage):
             fail(errors, "analysis audit: every fragment coverage must be 'expanded'")
         for edge_id, edge in edges.items():
-            if edge.get("type") != "db":
-                continue
-            candidates = {edge.get("from"), edge.get("to")}
-            if not candidates & db_nodes:
+            if edge.get("type") == "db" and edge_id not in covered_db_edges:
                 fail(errors, f"analysis audit: db edge {edge_id} lacks a database operation")
 
     if require_closed:
@@ -559,6 +614,7 @@ def merge_fragments(
 
     merged = {
         "root_keys": sorted(set(roots)),
+        "entry_root": effective_entry_root,
         "coverage": coverage,
         "nodes": [nodes[key] for key in sorted(nodes)],
         "edges": [edges[key] for key in sorted(edges)],
@@ -576,6 +632,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("fragments", nargs="+", type=Path, help="JSON fragment files")
     parser.add_argument("--output", type=Path, help="write merged JSON to this path")
+    parser.add_argument("--entry-root", help="canonical entry node used for reachability audit")
     parser.add_argument(
         "--require-analyzed",
         action="store_true",
@@ -594,6 +651,7 @@ def main() -> int:
         args.fragments,
         require_analyzed=args.require_analyzed or require_closed,
         require_closed=require_closed,
+        entry_root=args.entry_root,
     )
     if errors:
         for error in errors:
