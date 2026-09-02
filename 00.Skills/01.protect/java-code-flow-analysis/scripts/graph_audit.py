@@ -56,6 +56,7 @@ LOG_TIMINGS = {"before", "after-return", "after-commit", "on-exception", "finall
 EXCEPTION_MECHANISMS = {"catch", "advice", "listener-error-callback", "retry-hook"}
 LOG_LEVELS = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"}
 CONFIG_CURRENT_SOURCES = {"developer-input-required", "developer-provided"}
+DB_OPERATIONS = {"SELECT", "SELECT_LOCK", "INSERT", "UPDATE", "DELETE", "UPSERT", "MERGE", "CALL"}
 
 
 def fail(errors: list[str], message: str) -> None:
@@ -289,6 +290,62 @@ def audit_configuration(config: Any, source: Path, errors: list[str]) -> str | N
     return f"{name}@{read_reference}" if isinstance(read_reference, str) else None
 
 
+def audit_database_operation(operation: Any, source: Path, errors: list[str]) -> str | None:
+    if not isinstance(operation, dict):
+        fail(errors, f"{source}: database_operation must be an object")
+        return None
+    fields = (
+        "operation_id",
+        "node_key",
+        "table",
+        "operation",
+        "business_purpose",
+        "condition",
+        "key_fields",
+        "transaction_context",
+        "result_effect",
+        "sql_reference",
+        "mapping_reference",
+        "core",
+        "core_reason",
+        "evidence",
+        "evidence_basis",
+    )
+    require_fields(operation, fields, f"{source}: database_operation", errors)
+    operation_id = operation.get("operation_id")
+    if not isinstance(operation_id, str) or not operation_id.strip():
+        fail(errors, f"{source}: database_operation operation_id must be non-empty")
+        return None
+    for field in (
+        "node_key",
+        "table",
+        "business_purpose",
+        "condition",
+        "transaction_context",
+        "result_effect",
+        "sql_reference",
+        "mapping_reference",
+        "core_reason",
+    ):
+        if not isinstance(operation.get(field), str) or not operation[field].strip():
+            fail(errors, f"{source}: database_operation {operation_id}: {field} must be non-empty")
+    if operation.get("operation") not in DB_OPERATIONS:
+        fail(errors, f"{source}: database_operation {operation_id}: invalid operation")
+    if not isinstance(operation.get("core"), bool):
+        fail(errors, f"{source}: database_operation {operation_id}: core must be boolean")
+    if operation.get("evidence") not in EVIDENCE:
+        fail(errors, f"{source}: database_operation {operation_id}: invalid evidence")
+    audit_evidence_basis(
+        operation.get("evidence_basis"), f"{source}: database_operation {operation_id}", errors
+    )
+    key_fields = operation.get("key_fields")
+    if not isinstance(key_fields, list) or any(
+        not isinstance(item, str) or not item.strip() for item in key_fields
+    ):
+        fail(errors, f"{source}: database_operation {operation_id}: key_fields must be strings")
+    return operation_id
+
+
 def merge_fragments(
     paths: list[Path], require_analyzed: bool, require_closed: bool
 ) -> tuple[dict[str, Any], list[str]]:
@@ -299,6 +356,7 @@ def merge_fragments(
     coverage: list[str] = []
     frontier: list[Any] = []
     key_logs: dict[str, dict[str, Any]] = {}
+    database_operations: dict[str, dict[str, Any]] = {}
     configurations: dict[str, dict[str, Any]] = {}
     data_flows: list[Any] = []
     unresolved: list[Any] = []
@@ -314,6 +372,7 @@ def merge_fragments(
                 "coverage",
                 "nodes",
                 "edges",
+                "database_operations",
                 "key_logs",
                 "configurations",
                 "data_flows",
@@ -359,6 +418,19 @@ def merge_fragments(
                 fail(errors, f"{path}: duplicate edge_id {edge_id}")
             else:
                 edges[edge_id] = edge
+
+        fragment_db_operations = fragment.get("database_operations", [])
+        if not isinstance(fragment_db_operations, list):
+            fail(errors, f"{path}: database_operations must be an array")
+            fragment_db_operations = []
+        for operation in fragment_db_operations:
+            operation_id = audit_database_operation(operation, path, errors)
+            if operation_id is None:
+                continue
+            if operation_id in database_operations and database_operations[operation_id] != operation:
+                fail(errors, f"{path}: conflicting duplicate database operation {operation_id}")
+            else:
+                database_operations[operation_id] = operation
 
         fragment_logs = fragment.get("key_logs", [])
         if not isinstance(fragment_logs, list):
@@ -417,6 +489,13 @@ def merge_fragments(
     for log_id, log in key_logs.items():
         if log.get("node_key") not in known_nodes:
             fail(errors, f"key_log {log_id}: unknown node_key {log.get('node_key')!r}")
+    db_nodes: set[str] = set()
+    for operation_id, operation in database_operations.items():
+        node_key = operation.get("node_key")
+        if node_key not in known_nodes:
+            fail(errors, f"database_operation {operation_id}: unknown node_key {node_key!r}")
+        elif isinstance(node_key, str):
+            db_nodes.add(node_key)
     for config_key, config in configurations.items():
         for node_key in config.get("affected_node_keys", []):
             if node_key not in known_nodes:
@@ -430,6 +509,12 @@ def merge_fragments(
             fail(errors, f"completion audit: frontier is not empty ({len(frontier)} item(s))")
         if any(item != "expanded" for item in coverage):
             fail(errors, "analysis audit: every fragment coverage must be 'expanded'")
+        for edge_id, edge in edges.items():
+            if edge.get("type") != "db":
+                continue
+            candidates = {edge.get("from"), edge.get("to")}
+            if not candidates & db_nodes:
+                fail(errors, f"analysis audit: db edge {edge_id} lacks a database operation")
 
     if require_closed:
         unresolved_nodes = sorted(
@@ -460,12 +545,24 @@ def merge_fragments(
                 "closure audit: developer current values are required for configurations: "
                 + ", ".join(pending_configs),
             )
+        unresolved_tables = sorted(
+            operation_id
+            for operation_id, operation in database_operations.items()
+            if str(operation.get("table", "")).startswith("unresolved:")
+        )
+        if unresolved_tables:
+            fail(
+                errors,
+                "closure audit: unresolved database tables remain: "
+                + ", ".join(unresolved_tables),
+            )
 
     merged = {
         "root_keys": sorted(set(roots)),
         "coverage": coverage,
         "nodes": [nodes[key] for key in sorted(nodes)],
         "edges": [edges[key] for key in sorted(edges)],
+        "database_operations": [database_operations[key] for key in sorted(database_operations)],
         "key_logs": [key_logs[key] for key in sorted(key_logs)],
         "configurations": [configurations[key] for key in sorted(configurations)],
         "data_flows": data_flows,

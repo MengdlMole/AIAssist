@@ -83,6 +83,8 @@
 | evidence_summary | 一句话记录绑定依据、关键参数事实或异常传播；未知时说明所缺证据 |
 | evidence_basis | project-source、configuration-binding、generated-contract、framework-contract、runtime-evidence，可多选 |
 
+进入 Mapper/Repository 或数据库边界且会执行 SQL 的调用边使用 `type=db`；完成态下每条 `db` 边必须能在其调用方或目标节点找到对应 `database_operations`，不能仅登记方法名。
+
 最终展示编号由主 agent 在图合并、折叠和树结构稳定后统一分配：根为 `N1`，直接子调用为 `N1.1`、`N1.2`，下一层按路径扩展。同一方法可共享规范节点，但每个 `<规范符号键>@<incoming edge_id>[context]` 调用身份分别编号；循环/递归使用 `↩ <已有编号>` 回指。横切共享节点若由框架拦截或分派而非普通直接调用，使用独立 `X` 编号，不伪装成 `N` 的子调用。子 agent 只返回规范符号键、edge_id、上下文和一句业务动作，不分配展示编号。
 
 ## 2. 第一阶段：受约束的浅层 BFS
@@ -132,7 +134,7 @@
 - 当前节点/边账本快照、已知祖先路径、运行时绑定和避免重复的 claimed 节点。
 - 主 agent 已完成的共享横切节点与禁止重复展开的符号清单。
 - 合理的深度或上下文预算；预算只决定何时返回 partial，不改变完成标准。
-- 必须覆盖成功、关键分支、异常、返回/数据流、日志和动态绑定。
+- 必须覆盖成功、关键分支、异常、返回/数据流、数据库表操作、日志和动态绑定。
 - 必须汇总能改变子图可达性、实现选择或结果的配置；当前值只接受开发者输入。
 - 只读约束与证据状态定义。
 - 下面的统一返回格式。
@@ -169,6 +171,25 @@
       "callsite": "<path:line>",
       "condition": "<condition>",
       "evidence_summary": "<binding, argument or exception fact>",
+      "evidence_basis": ["project-source"]
+    }
+  ],
+  "database_operations": [
+    {
+      "operation_id": "<stable SQL/callsite + table id>",
+      "node_key": "<canonical key of the direct DB operation>",
+      "table": "<schema.table or unresolved:expression>",
+      "operation": "SELECT | SELECT_LOCK | INSERT | UPDATE | DELETE | UPSERT | MERGE | CALL",
+      "business_purpose": "<one sentence>",
+      "condition": "<branch and WHERE/join condition>",
+      "key_fields": ["<primary/business/status field>"],
+      "transaction_context": "<transaction or none/unknown>",
+      "result_effect": "<how rows/result affect the flow>",
+      "sql_reference": "<XML/annotation/DSL reference or unavailable>",
+      "mapping_reference": "<Mapper/Repository declaration and callsite>",
+      "core": true,
+      "core_reason": "<state change, branch/output, lock/idempotency, or auxiliary reason>",
+      "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
       "evidence_basis": ["project-source"]
     }
   ],
@@ -215,6 +236,8 @@
 
 `evidence_basis` 至少选择一个合法值：`project-source / configuration-binding / generated-contract / framework-contract / runtime-evidence`。`exception_mechanism` 仅在 `timing=on-exception` 时必填，其他时点省略。
 
+`database_operations` 对每个实际表逐项记录；JOIN/子查询多表拆项，软删除使用 `UPDATE`。无法解析动态表名时以 `unresolved:` 开头并同步加入 `unresolved`。主 agent 将 `node_key` 转成最终 `N`，在时序图和调用树的直接节点附 `[DB <OP> <table>]`，不向祖先传播。
+
 `configurations` 只收录改变流程走向的配置。`current_value_source=developer-input-required` 时，`current_value` 必须固定为同名占位；不得把源码默认值、仓库配置或环境变量表达式当作当前运行值。主 agent 合并后将 `affected_node_keys` 转成最终 `N` 编号。
 
 子 agent 不分配最终 `N` 编号、不修改最终文档、不新增枚举值、不把推断改写成事实。若发现代码缺陷，只在它改变本子图控制/数据语义时用一句事实描述，不继续扩展审计。若发现范围外的新子图，只登记到 frontier，不自行无限追踪。默认保持单层委派；只有协调者明确给出命名空间和合并协议时才继续递归委派。上下文或时间预算耗尽时必须返回 `partial`、已覆盖调用点、未完成 frontier 和下一步，不得返回 `expanded`。
@@ -230,7 +253,7 @@
 3. 领取任务前将节点原子地标为 claimed；合并后将新发现节点加入 frontier，并更新 expanded、partial、boundary、unresolved 等状态，避免不同 agent 重复领取。
 4. 对重复读取的共享节点保留证据更强、范围更完整的结果，不拼接矛盾摘要。
 5. 重新计算下一波优先级；在账本合并前不派发依赖上一波结果的新任务。
-6. 独立复核所有高影响负面结论，尤其是“无事务、无日志、无流程配置、无实际实现、无消费者、无异常处理”。缺少搜索范围和证据的负面结论一律降为 unknown。
+6. 独立复核所有高影响负面结论，尤其是“无事务、无数据库表操作、无日志、无流程配置、无实际实现、无消费者、无异常处理”。缺少搜索范围和证据的负面结论一律降为 unknown。
 
 上下文紧张时，主 agent只保留 scope、节点/边摘要、frontier 和未决冲突在当前上下文中；详细代码摘录留在检查点，需要裁决时再读取源文件，不复制所有子 agent 长篇说明。
 
@@ -253,6 +276,7 @@
 - frontier 与 partial 为空；所有发现节点均为 expanded、folded、boundary、out-of-scope 或 unresolved。
 - 每个 expanded 方法内的相关调用点都有对应边或明确分类。
 - 每个关键条件分支、异常出口和返回路径均有去向。
+- 每条可达数据库边已解析到表、操作、事务与 SQL/映射证据，或显式记为 unresolved。
 - 接口多实现、配置路由、反射与 AOP 已解析，或作为 unresolved 列出候选、影响和验证方式。
 - 所有改变流程走向的配置已汇总并关联节点；缺少当前值时已覆盖候选路径并标明实际选择未知。
 - 异步/MQ 边已连接到消费者，或明确停在无法证明的边界。

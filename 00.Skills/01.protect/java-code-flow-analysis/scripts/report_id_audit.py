@@ -19,6 +19,8 @@ MERMAID_SHORT_SYMBOL = (
     r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:#35;|#)[A-Za-z_$][\w$]*"
 )
 FENCE_PATTERN = re.compile(r"```(?P<kind>\w+)\s*\n(?P<body>.*?)```", re.DOTALL)
+DB_OPERATION = r"(?:SELECT_LOCK|SELECT|INSERT|UPDATE|DELETE|UPSERT|MERGE|CALL)"
+DB_ANNOTATION_PATTERN = re.compile(rf"\[DB\s+({DB_OPERATION})\s+([A-Za-z0-9_$.*:-]+)\]")
 
 
 @dataclass(frozen=True)
@@ -336,6 +338,132 @@ def validate_configurations(text: str, n_ids: set[str], errors: list[str]) -> No
         errors.append("configurations: report cannot claim 调用图已闭合 while current values are pending")
 
 
+def database_annotations(section: str, kind: str) -> list[tuple[str, str, str]]:
+    records: list[tuple[str, str, str]] = []
+    for fence in FENCE_PATTERN.finditer(section):
+        if fence.group("kind").lower() != kind:
+            continue
+        body = fence.group("body")
+        if kind == "mermaid" and "sequenceDiagram" not in body:
+            continue
+        for line in body.splitlines():
+            if kind == "mermaid":
+                message = line.split(":", 1)[1].strip() if ":" in line else ""
+                node_match = re.match(rf"^({N_ID})\b", message)
+            else:
+                node_match = re.match(
+                    rf"^[\s│]*(?:(?:├──|└──)\s*)?(?:~~异步~~>\s*)?({N_ID})(?![\d.])",
+                    line,
+                )
+            if not node_match:
+                continue
+            for operation, table in DB_ANNOTATION_PATTERN.findall(line):
+                records.append((node_match.group(1), operation, table))
+    return records
+
+
+def validate_database_operations(
+    text: str,
+    sequence_section: str,
+    tree_section: str,
+    n_ids: set[str],
+    errors: list[str],
+) -> None:
+    section = named_heading_section(text, r"数据库表操作汇总|核心表操作汇总")
+    if not section:
+        errors.append("report: missing database operation summary section")
+        return
+    sequence_records = database_annotations(sequence_section, "mermaid")
+    tree_records_found = database_annotations(tree_section, "text")
+    none_found = "目标路径上未发现数据库表操作" in section
+    if none_found:
+        if sequence_records or tree_records_found:
+            errors.append("database: empty conclusion conflicts with DB annotations")
+        if re.search(r"^\|\s*节点\s*\|\s*表\s*\|", section, re.MULTILINE):
+            errors.append("database: empty conclusion conflicts with operation table")
+        return
+
+    lines = section.splitlines()
+    header_index = -1
+    expected = [
+        "节点",
+        "表",
+        "操作",
+        "业务目的",
+        "条件/关键字段",
+        "事务/结果影响",
+        "SQL/映射证据",
+        "核心性/理由",
+    ]
+    for index, line in enumerate(lines):
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = markdown_cells(line)
+        if cells and cells[0] == "节点" and len(cells) > 1 and cells[1] == "表":
+            header_index = index
+            if cells != expected:
+                errors.append("database: operation table columns do not match the required order")
+            break
+    if header_index < 0:
+        errors.append("database: missing required operation table")
+        return
+
+    summary_records: list[tuple[str, str, str]] = []
+    for line in lines[header_index + 1 :]:
+        if not line.lstrip().startswith("|"):
+            if summary_records:
+                break
+            continue
+        cells = markdown_cells(line)
+        if not cells or cells[0].startswith("---"):
+            continue
+        if len(cells) < 8:
+            errors.append("database: each operation row must contain all eight fields")
+            continue
+        node = cells[0].strip(" `<> ")
+        table = cells[1].strip(" `<> ")
+        operation = cells[2].strip(" `<> ")
+        if node not in n_ids:
+            errors.append(f"database: operation row references missing node {node!r}")
+        if not re.fullmatch(DB_OPERATION, operation):
+            errors.append(f"database: {node}/{table} has invalid operation {operation!r}")
+        if not table:
+            errors.append(f"database: {node} has an empty table name")
+        if any(not cells[index].strip(" `<> ") for index in range(3, 8)):
+            errors.append(f"database: {node}/{table} has empty operation details")
+        core_value = cells[7].strip(" `<> ")
+        if not re.match(r"^(?:核心|辅助)[；;：:].+$", core_value):
+            errors.append(f"database: {node}/{table} core classification requires 核心/辅助 and reason")
+        summary_records.append((node, operation, table))
+
+    if not summary_records:
+        errors.append("database: operation table has no rows")
+        return
+    for label, records in (
+        ("sequence", sequence_records),
+        ("tree", tree_records_found),
+        ("summary", summary_records),
+    ):
+        duplicates = sorted(item for item, count in Counter(records).items() if count != 1)
+        if duplicates:
+            errors.append(f"database: duplicate {label} annotations: {duplicates}")
+    sequence_set, tree_set, summary_set = (
+        set(sequence_records),
+        set(tree_records_found),
+        set(summary_records),
+    )
+    if sequence_set != tree_set:
+        errors.append(
+            "database: sequence/tree annotations differ: "
+            f"sequence-only={sorted(sequence_set - tree_set)}, tree-only={sorted(tree_set - sequence_set)}"
+        )
+    if tree_set != summary_set:
+        errors.append(
+            "database: tree/summary operations differ: "
+            f"tree-only={sorted(tree_set - summary_set)}, summary-only={sorted(summary_set - tree_set)}"
+        )
+
+
 def audit(path: Path) -> list[str]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -395,6 +523,7 @@ def audit(path: Path) -> list[str]:
     x_ids = crosscut_ids(text, sequence_section, errors)
     validate_logs(text, table_set, x_ids, errors)
     validate_configurations(text, table_set, errors)
+    validate_database_operations(text, sequence_section, tree_section, table_set, errors)
     if not sequence_refs:
         errors.append("sequence: no call IDs found")
     return errors
