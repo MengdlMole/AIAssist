@@ -102,6 +102,7 @@ def audit_node(node: Any, source: Path, errors: list[str]) -> str | None:
             "key",
             "state",
             "direct_calls_complete",
+            "semantic_scan_complete",
             "evidence",
             "evidence_basis",
             "file_symbol",
@@ -125,8 +126,18 @@ def audit_node(node: Any, source: Path, errors: list[str]) -> str | None:
     direct_complete = node.get("direct_calls_complete")
     if not isinstance(direct_complete, bool):
         fail(errors, f"{source}: node {key}: direct_calls_complete must be boolean")
-    if state == "expanded" and direct_complete is not True:
-        fail(errors, f"{source}: expanded node {key} must have direct_calls_complete=true")
+    semantic_complete = node.get("semantic_scan_complete")
+    if not isinstance(semantic_complete, bool):
+        fail(errors, f"{source}: node {key}: semantic_scan_complete must be boolean")
+    if state == "expanded":
+        if direct_complete is not True:
+            fail(errors, f"{source}: expanded node {key} must have direct_calls_complete=true")
+        if semantic_complete is not True:
+            fail(errors, f"{source}: expanded node {key} must have semantic_scan_complete=true")
+    if state == "folded" and (
+        not isinstance(node.get("fold_reason"), str) or not node["fold_reason"].strip()
+    ):
+        fail(errors, f"{source}: folded node {key} requires a non-empty fold_reason")
     for field in ("file_symbol", "role", "context", "summary"):
         if not isinstance(node.get(field), str) or not node[field].strip():
             fail(errors, f"{source}: node {key}: {field} must be a non-empty string")
@@ -170,6 +181,13 @@ def audit_edge(edge: Any, source: Path, errors: list[str]) -> str | None:
     for field in ("from", "to", "callsite", "condition", "evidence_summary"):
         if not isinstance(edge.get(field), str) or not edge[field].strip():
             fail(errors, f"{source}: edge {edge_id}: {field} must be a non-empty string")
+    if edge.get("type") in {"async", "event", "mq"}:
+        for field in ("channel", "payload", "binding_reference", "failure_semantics"):
+            if not isinstance(edge.get(field), str) or not edge[field].strip():
+                fail(
+                    errors,
+                    f"{source}: edge {edge_id}: asynchronous edge requires non-empty {field}",
+                )
     audit_evidence_basis(edge.get("evidence_basis"), f"{source}: edge {edge_id}", errors)
     return edge_id
 
@@ -247,6 +265,7 @@ def audit_configuration(config: Any, source: Path, errors: list[str]) -> str | N
         "current_value",
         "current_value_source",
         "affected_node_keys",
+        "affected_rule_keys",
         "declaration_reference",
         "read_reference",
         "evidence",
@@ -286,6 +305,11 @@ def audit_configuration(config: Any, source: Path, errors: list[str]) -> str | N
         not isinstance(item, str) or not item.strip() for item in node_keys
     ):
         fail(errors, f"{source}: configuration {name}: affected_node_keys must be non-empty strings")
+    rule_keys = config.get("affected_rule_keys")
+    if not isinstance(rule_keys, list) or any(
+        not isinstance(item, str) or not item.strip() for item in rule_keys
+    ):
+        fail(errors, f"{source}: configuration {name}: affected_rule_keys must be strings")
     read_reference = config.get("read_reference")
     return f"{name}@{read_reference}" if isinstance(read_reference, str) else None
 
@@ -348,6 +372,169 @@ def audit_database_operation(operation: Any, source: Path, errors: list[str]) ->
     return operation_id
 
 
+def audit_business_fact(
+    value: Any,
+    source: Path,
+    kind: str,
+    id_field: str,
+    string_fields: tuple[str, ...],
+    list_fields: tuple[str, ...],
+    errors: list[str],
+) -> str | None:
+    if not isinstance(value, dict):
+        fail(errors, f"{source}: {kind} must be an object")
+        return None
+    require_fields(
+        value,
+        (id_field, *string_fields, *list_fields, "evidence", "evidence_basis"),
+        f"{source}: {kind}",
+        errors,
+    )
+    item_id = value.get(id_field)
+    if not isinstance(item_id, str) or not item_id.strip():
+        fail(errors, f"{source}: {kind} {id_field} must be non-empty")
+        return None
+    for field in string_fields:
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            fail(errors, f"{source}: {kind} {item_id}: {field} must be non-empty")
+    for field in list_fields:
+        items = value.get(field)
+        if not isinstance(items, list) or not items or any(
+            not isinstance(item, str) or not item.strip() for item in items
+        ):
+            fail(errors, f"{source}: {kind} {item_id}: {field} must be non-empty strings")
+    if value.get("evidence") not in EVIDENCE:
+        fail(errors, f"{source}: {kind} {item_id}: invalid evidence")
+    audit_evidence_basis(value.get("evidence_basis"), f"{source}: {kind} {item_id}", errors)
+    return item_id
+
+
+def audit_decision(value: Any, source: Path, errors: list[str]) -> str | None:
+    return audit_business_fact(
+        value,
+        source,
+        "decision_point",
+        "decision_id",
+        (
+            "node_key",
+            "business_question",
+            "condition",
+            "evaluation_order",
+            "matched_target",
+            "unmatched_target",
+            "business_effect",
+            "reference",
+        ),
+        ("operand_refs",),
+        errors,
+    )
+
+
+def audit_key_field(value: Any, source: Path, errors: list[str]) -> str | None:
+    return audit_business_fact(
+        value,
+        source,
+        "key_field",
+        "field_key",
+        (
+            "name",
+            "source",
+            "business_meaning",
+            "flow_effect",
+            "transform_rule",
+            "destination",
+            "reference",
+        ),
+        ("node_keys",),
+        errors,
+    )
+
+
+def audit_business_rule(value: Any, source: Path, errors: list[str]) -> str | None:
+    return audit_business_fact(
+        value,
+        source,
+        "business_rule",
+        "rule_key",
+        (
+            "name",
+            "business_meaning",
+            "applicability",
+            "calculation",
+            "output",
+            "boundary_semantics",
+            "business_effect",
+            "reference",
+        ),
+        ("node_keys", "input_refs"),
+        errors,
+    )
+
+
+def validate_fact_ref(
+    ref: Any,
+    label: str,
+    allowed: dict[str, set[str] | None],
+    errors: list[str],
+) -> None:
+    if not isinstance(ref, str) or ":" not in ref:
+        fail(errors, f"{label}: reference must use <kind>:<id>")
+        return
+    kind, value = ref.split(":", 1)
+    if kind not in allowed or not value.strip():
+        fail(errors, f"{label}: invalid reference {ref!r}")
+        return
+    known = allowed[kind]
+    if known is not None and value not in known:
+        fail(errors, f"{label}: unknown {kind} reference {value!r}")
+
+
+def is_resolved_successor(
+    start: str, target: str, edges: dict[str, dict[str, Any]]
+) -> bool:
+    """Return whether target is reachable after start through resolved call edges."""
+    if start == target:
+        return False
+    adjacency: dict[str, set[str]] = {}
+    for edge in edges.values():
+        if edge.get("resolution_status") != "resolved":
+            continue
+        source, destination = edge.get("from"), edge.get("to")
+        if isinstance(source, str) and isinstance(destination, str):
+            adjacency.setdefault(source, set()).add(destination)
+    pending = list(adjacency.get(start, ()))
+    visited = {start}
+    while pending:
+        node = pending.pop()
+        if node == target:
+            return True
+        if node in visited:
+            continue
+        visited.add(node)
+        pending.extend(adjacency.get(node, ()))
+    return False
+
+
+def validate_decision_target_topology(
+    ref: Any,
+    decision_node: Any,
+    label: str,
+    edges: dict[str, dict[str, Any]],
+    known_nodes: set[str],
+    errors: list[str],
+) -> None:
+    """Ensure a branch target actually leaves the decision node."""
+    if not isinstance(ref, str) or ":" not in ref or not isinstance(decision_node, str):
+        return
+    kind, value = ref.split(":", 1)
+    if kind == "edge" and value in edges and edges[value].get("from") != decision_node:
+        fail(errors, f"{label}: edge target must originate from decision node {decision_node!r}")
+    elif kind == "node" and value in known_nodes and not is_resolved_successor(
+        decision_node, value, edges
+    ):
+        fail(errors, f"{label}: node target must be a resolved successor of {decision_node!r}")
+
+
 def merge_node(
     existing: dict[str, Any], incoming: dict[str, Any], source: Path, errors: list[str]
 ) -> dict[str, Any]:
@@ -381,6 +568,9 @@ def merge_fragments(
     coverage: list[str] = []
     frontier: list[Any] = []
     key_logs: dict[str, dict[str, Any]] = {}
+    decision_points: dict[str, dict[str, Any]] = {}
+    key_fields: dict[str, dict[str, Any]] = {}
+    business_rules: dict[str, dict[str, Any]] = {}
     database_operations: dict[str, dict[str, Any]] = {}
     configurations: dict[str, dict[str, Any]] = {}
     data_flows: list[Any] = []
@@ -397,6 +587,9 @@ def merge_fragments(
                 "coverage",
                 "nodes",
                 "edges",
+                "decision_points",
+                "key_fields",
+                "business_rules",
                 "database_operations",
                 "key_logs",
                 "configurations",
@@ -440,6 +633,24 @@ def merge_fragments(
                 fail(errors, f"{path}: duplicate edge_id {edge_id}")
             else:
                 edges[edge_id] = edge
+
+        for field, target, audit_item, label in (
+            ("decision_points", decision_points, audit_decision, "decision point"),
+            ("key_fields", key_fields, audit_key_field, "key field"),
+            ("business_rules", business_rules, audit_business_rule, "business rule"),
+        ):
+            values = fragment.get(field, [])
+            if not isinstance(values, list):
+                fail(errors, f"{path}: {field} must be an array")
+                continue
+            for value in values:
+                item_id = audit_item(value, path, errors)
+                if item_id is None:
+                    continue
+                if item_id in target and target[item_id] != value:
+                    fail(errors, f"{path}: conflicting duplicate {label} {item_id}")
+                else:
+                    target[item_id] = value
 
         fragment_db_operations = fragment.get("database_operations", [])
         if not isinstance(fragment_db_operations, list):
@@ -539,6 +750,72 @@ def merge_fragments(
     for log_id, log in key_logs.items():
         if log.get("node_key") not in known_nodes:
             fail(errors, f"key_log {log_id}: unknown node_key {log.get('node_key')!r}")
+    for decision_id, decision in decision_points.items():
+        if decision.get("node_key") not in known_nodes:
+            fail(errors, f"decision_point {decision_id}: unknown node_key {decision.get('node_key')!r}")
+    for field_key, field in key_fields.items():
+        node_keys = field.get("node_keys")
+        for node_key in node_keys if isinstance(node_keys, list) else []:
+            if node_key not in known_nodes:
+                fail(errors, f"key_field {field_key}: unknown node_key {node_key!r}")
+    for rule_key, rule in business_rules.items():
+        node_keys = rule.get("node_keys")
+        for node_key in node_keys if isinstance(node_keys, list) else []:
+            if node_key not in known_nodes:
+                fail(errors, f"business_rule {rule_key}: unknown node_key {node_key!r}")
+    configuration_names = {
+        str(config.get("name")) for config in configurations.values() if config.get("name")
+    }
+    source_refs: dict[str, set[str] | None] = {
+        "field": set(key_fields),
+        "config": configuration_names,
+        "rule": set(business_rules),
+        "db": set(database_operations),
+        "edge": set(edges),
+        "node": known_nodes,
+    }
+    target_refs: dict[str, set[str] | None] = {
+        "edge": set(edges),
+        "node": known_nodes,
+        "result": None,
+        "boundary": None,
+    }
+    for decision_id, decision in decision_points.items():
+        operand_refs = decision.get("operand_refs")
+        for ref in operand_refs if isinstance(operand_refs, list) else []:
+            validate_fact_ref(ref, f"decision_point {decision_id} operand", source_refs, errors)
+        validate_fact_ref(
+            decision.get("matched_target"),
+            f"decision_point {decision_id} matched_target",
+            target_refs,
+            errors,
+        )
+        validate_decision_target_topology(
+            decision.get("matched_target"),
+            decision.get("node_key"),
+            f"decision_point {decision_id} matched_target",
+            edges,
+            known_nodes,
+            errors,
+        )
+        validate_fact_ref(
+            decision.get("unmatched_target"),
+            f"decision_point {decision_id} unmatched_target",
+            target_refs,
+            errors,
+        )
+        validate_decision_target_topology(
+            decision.get("unmatched_target"),
+            decision.get("node_key"),
+            f"decision_point {decision_id} unmatched_target",
+            edges,
+            known_nodes,
+            errors,
+        )
+    for rule_key, rule in business_rules.items():
+        input_refs = rule.get("input_refs")
+        for ref in input_refs if isinstance(input_refs, list) else []:
+            validate_fact_ref(ref, f"business_rule {rule_key} input", source_refs, errors)
     covered_db_edges: set[str] = set()
     for operation_id, operation in database_operations.items():
         node_key = operation.get("node_key")
@@ -555,9 +832,34 @@ def merge_fragments(
         else:
             covered_db_edges.add(str(edge_id))
     for config_key, config in configurations.items():
-        for node_key in config.get("affected_node_keys", []):
+        node_keys = config.get("affected_node_keys")
+        for node_key in node_keys if isinstance(node_keys, list) else []:
             if node_key not in known_nodes:
                 fail(errors, f"configuration {config_key}: unknown affected node {node_key!r}")
+        rule_keys = config.get("affected_rule_keys")
+        for rule_key in rule_keys if isinstance(rule_keys, list) else []:
+            if rule_key not in business_rules:
+                fail(errors, f"configuration {config_key}: unknown affected rule {rule_key!r}")
+            else:
+                input_refs = business_rules[rule_key].get("input_refs")
+                if not isinstance(input_refs, list) or f"config:{config.get('name')}" not in input_refs:
+                    fail(
+                        errors,
+                        f"configuration {config_key}: rule {rule_key!r} lacks reverse config ref",
+                    )
+    for rule_key, rule in business_rules.items():
+        input_refs = rule.get("input_refs")
+        for ref in input_refs if isinstance(input_refs, list) else []:
+            if not isinstance(ref, str) or not ref.startswith("config:"):
+                continue
+            config_name = ref.split(":", 1)[1]
+            matching = [config for config in configurations.values() if config.get("name") == config_name]
+            if matching and not any(
+                isinstance(config.get("affected_rule_keys"), list)
+                and rule_key in config["affected_rule_keys"]
+                for config in matching
+            ):
+                fail(errors, f"business_rule {rule_key}: config {config_name!r} lacks reverse rule ref")
 
     if require_analyzed or require_closed:
         open_nodes = sorted(key for key, node in nodes.items() if node.get("state") in OPEN_STATES)
@@ -618,6 +920,9 @@ def merge_fragments(
         "coverage": coverage,
         "nodes": [nodes[key] for key in sorted(nodes)],
         "edges": [edges[key] for key in sorted(edges)],
+        "decision_points": [decision_points[key] for key in sorted(decision_points)],
+        "key_fields": [key_fields[key] for key in sorted(key_fields)],
+        "business_rules": [business_rules[key] for key in sorted(business_rules)],
         "database_operations": [database_operations[key] for key in sorted(database_operations)],
         "key_logs": [key_logs[key] for key in sorted(key_logs)],
         "configurations": [configurations[key] for key in sorted(configurations)],

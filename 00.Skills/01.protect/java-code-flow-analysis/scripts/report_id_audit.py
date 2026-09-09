@@ -33,6 +33,7 @@ class NodeIdentity:
     action: str
     parent: str | None
     callsite: str
+    context: str
 
 
 def named_section(text: str, title_pattern: str) -> str:
@@ -46,7 +47,7 @@ def named_section(text: str, title_pattern: str) -> str:
 
 def named_heading_section(text: str, title_pattern: str) -> str:
     match = re.search(
-        rf"^##{{2,3}}\s+[^\n]*(?:{title_pattern})[^\n]*\n(?P<body>.*?)(?=^##{{2,3}}\s+|\Z)",
+        rf"^#{{2,3}}\s+[^\n]*(?:{title_pattern})[^\n]*\n(?P<body>.*?)(?=^#{{2,3}}\s+|\Z)",
         text,
         re.MULTILINE | re.DOTALL,
     )
@@ -134,6 +135,29 @@ def normalize_action(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip(" `<> "))
 
 
+def validate_action_quality(node_id: str, action: str, errors: list[str]) -> None:
+    match = re.fullmatch(r"(.+?)[；;](.+?)\s*→\s*(.+)", action)
+    if not match or any(not part.strip(" `<> ") for part in match.groups()):
+        errors.append(
+            f"action: {node_id} must use '<action + business object>; "
+            "<key input/condition> → <result/effect>'"
+        )
+        return
+    generic = {
+        "处理请求",
+        "处理数据",
+        "执行业务",
+        "执行逻辑",
+        "调用服务",
+        "查询数据",
+        "保存数据",
+        "返回结果",
+        "校验参数",
+    }
+    if match.group(1).strip(" `<> ") in generic:
+        errors.append(f"action: {node_id} uses an overly generic action/object description")
+
+
 def sequence_actions(section: str) -> dict[str, str]:
     actions: dict[str, str] = {}
     pattern = re.compile(
@@ -169,6 +193,30 @@ def tree_actions(section: str) -> dict[str, str]:
             if action_match:
                 actions[node_match.group(1)] = normalize_action(action_match.group(1))
     return actions
+
+
+def asynchronous_execution_ids(sequence_section: str, tree_section: str) -> tuple[set[str], set[str]]:
+    sequence_ids: set[str] = set()
+    for fence in FENCE_PATTERN.finditer(sequence_section):
+        if fence.group("kind").lower() != "mermaid" or "sequenceDiagram" not in fence.group("body"):
+            continue
+        for line in fence.group("body").splitlines():
+            if "-)" not in line or ":" not in line:
+                continue
+            match = re.match(rf"^({N_ID})\b", line.split(":", 1)[1].strip())
+            if match:
+                sequence_ids.add(match.group(1))
+    tree_ids: set[str] = set()
+    for fence in FENCE_PATTERN.finditer(tree_section):
+        if fence.group("kind").lower() != "text":
+            continue
+        for line in fence.group("body").splitlines():
+            if "~~异步~~>" not in line:
+                continue
+            match = N_ID_PATTERN.search(line)
+            if match:
+                tree_ids.add(match.group(0))
+    return sequence_ids, tree_ids
 
 
 def node_table_records(section: str, errors: list[str]) -> tuple[list[str], dict[str, NodeIdentity]]:
@@ -238,7 +286,7 @@ def node_table_records(section: str, errors: list[str]) -> tuple[list[str], dict
                 f"node table: duplicate call identity for {occurrence_keys[occurrence_key]} and {node_id}"
             )
         occurrence_keys[occurrence_key] = node_id
-        records[node_id] = NodeIdentity(node_id, symbol, action, parent, callsite)
+        records[node_id] = NodeIdentity(node_id, symbol, action, parent, callsite, context)
     return ids, records
 
 
@@ -402,12 +450,18 @@ def validate_logs(text: str, n_ids: set[str], x_ids: set[str], errors: list[str]
             errors.append(f"logs: {log_id} references missing crosscut node {target}")
 
 
-def validate_configurations(text: str, n_ids: set[str], errors: list[str]) -> None:
+def validate_configurations(
+    text: str,
+    n_ids: set[str],
+    rule_ids: set[str],
+    rule_inputs: dict[str, str],
+    errors: list[str],
+) -> None:
     section = named_section(text, r"配置项汇总|配置与运行时选择")
     if not section:
         errors.append("report: missing configuration summary section")
         return
-    if "目标路径上未发现影响流程走向的配置项" in section:
+    if "目标路径上未发现影响业务流程、处理范围或结果的配置项" in section:
         if re.search(r"^\|\s*配置项名称\s*\|", section, re.MULTILINE):
             errors.append("configurations: empty conclusion conflicts with a configuration table")
         return
@@ -425,7 +479,7 @@ def validate_configurations(text: str, n_ids: set[str], errors: list[str]) -> No
                 "作用",
                 "默认值",
                 "当前值（开发者填写）",
-                "关联编号（时序图/调用树）",
+                "关联编号（N/R）",
                 "声明/读取证据",
             ]
             if cells != expected:
@@ -464,10 +518,259 @@ def validate_configurations(text: str, n_ids: set[str], errors: list[str]) -> No
             errors.append(
                 f"configurations: {cells[0]} references missing nodes: {', '.join(missing)}"
             )
+        referenced_rules = set(re.findall(r"(?<![A-Za-z0-9])R\d+(?!\d)", cells[5]))
+        missing_rules = sorted(referenced_rules - rule_ids)
+        if missing_rules:
+            errors.append(
+                f"configurations: {cells[0]} references missing rules: {', '.join(missing_rules)}"
+            )
+        config_name = cells[0].strip(" `<> ")
+        for rule_id in referenced_rules & rule_ids:
+            rule_configs = set(
+                re.findall(
+                    r"(?<![A-Za-z0-9])config:([A-Za-z0-9_.-]+)",
+                    rule_inputs.get(rule_id, ""),
+                )
+            )
+            if config_name not in rule_configs:
+                errors.append(
+                    f"configurations: {config_name} links {rule_id}, but the rule raw input "
+                    "does not reference this configuration"
+                )
     if row_count == 0:
         errors.append("configurations: table has no configuration rows")
     if pending_current and re.search(r"遍历结论：[^\n]*调用图已闭合", text):
         errors.append("configurations: report cannot claim 调用图已闭合 while current values are pending")
+
+
+def required_summary_rows(
+    text: str,
+    title_pattern: str,
+    expected_header: list[str],
+    row_pattern: str,
+    empty_text: str | None,
+    label: str,
+    errors: list[str],
+) -> list[list[str]]:
+    section = named_heading_section(text, title_pattern)
+    if not section:
+        errors.append(f"report: missing {label} section")
+        return []
+    lines = section.splitlines()
+    header_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.lstrip().startswith("|")
+            and markdown_cells(line)
+            and markdown_cells(line)[0] == expected_header[0]
+        ),
+        -1,
+    )
+    empty_found = bool(empty_text and empty_text in section)
+    if empty_found and header_index >= 0:
+        errors.append(f"{label}: empty conclusion conflicts with table")
+        return []
+    if empty_found:
+        return []
+    if header_index < 0:
+        errors.append(f"{label}: missing required table")
+        return []
+    if markdown_cells(lines[header_index]) != expected_header:
+        errors.append(f"{label}: table columns do not match required order")
+    rows: list[list[str]] = []
+    for line in lines[header_index + 1 :]:
+        if not line.lstrip().startswith("|"):
+            if rows:
+                break
+            continue
+        cells = markdown_cells(line)
+        if not cells or cells[0].startswith("---"):
+            continue
+        if not re.match(row_pattern, cells[0].strip(" `<> ")):
+            continue
+        if len(cells) != len(expected_header):
+            errors.append(f"{label}: each row must contain all {len(expected_header)} fields")
+            continue
+        if any(not cell.strip(" `<> ") for cell in cells):
+            errors.append(f"{label}: {cells[0]} contains empty required fields")
+        rows.append(cells)
+    if not rows:
+        errors.append(f"{label}: table has no data rows")
+    return rows
+
+
+def validate_reader_guidance(
+    text: str, n_ids: set[str], errors: list[str]
+) -> tuple[set[str], dict[str, str]]:
+    step_rows = required_summary_rows(
+        text,
+        r"业务步骤导读",
+        ["步骤", "关联节点", "业务目的", "输入/前置", "关键处理", "产出/状态变化", "下一步"],
+        r"^B\d+\b",
+        None,
+        "business steps",
+        errors,
+    )
+    step_ids = [
+        re.match(r"^(B\d+)\b", row[0].strip(" `<> ")).group(1) for row in step_rows
+    ]
+    expected_steps = [f"B{index}" for index in range(1, len(step_ids) + 1)]
+    if step_ids != expected_steps:
+        errors.append(f"business steps: IDs must be unique and contiguous; got {step_ids}")
+    known_steps = set(step_ids)
+    step_edges: dict[str, set[str]] = {}
+    node_step_counts: Counter[str] = Counter()
+    for row in step_rows:
+        step_id = re.match(r"^(B\d+)\b", row[0].strip(" `<> ")).group(1)
+        next_steps = set(re.findall(r"\bB\d+\b", row[6]))
+        step_edges[step_id] = next_steps
+        missing_steps = sorted(next_steps - known_steps)
+        if missing_steps:
+            errors.append(
+                f"business steps: {row[0]} references missing steps: {', '.join(missing_steps)}"
+            )
+        for node_id in set(N_ID_PATTERN.findall(row[1])):
+            node_step_counts[node_id] += 1
+    reachable_steps: set[str] = set()
+    frontier = ["B1"] if "B1" in known_steps else []
+    while frontier:
+        step_id = frontier.pop()
+        if step_id in reachable_steps:
+            continue
+        reachable_steps.add(step_id)
+        frontier.extend(step_edges.get(step_id, set()) - reachable_steps)
+    unreachable_steps = sorted(known_steps - reachable_steps)
+    if unreachable_steps:
+        errors.append("business steps: unreachable from B1: " + ", ".join(unreachable_steps))
+    missing_step_nodes = sorted(n_ids - set(node_step_counts))
+    if missing_step_nodes:
+        errors.append("business steps: nodes lack a business step: " + ", ".join(missing_step_nodes))
+    duplicate_step_nodes = sorted(
+        node_id for node_id, count in node_step_counts.items() if count > 1
+    )
+    if duplicate_step_nodes:
+        errors.append(
+            "business steps: nodes belong to multiple steps: " + ", ".join(duplicate_step_nodes)
+        )
+
+    field_rows = required_summary_rows(
+        text,
+        r"关键参数与字段",
+        ["参数/字段", "来源", "业务含义", "使用节点", "对流程/结果的作用", "转换/默认值/空值规则", "最终去向", "证据"],
+        r"^.+$",
+        "目标路径上未发现需要单独说明的关键参数或字段",
+        "key fields",
+        errors,
+    )
+    rule_rows = required_summary_rows(
+        text,
+        r"关键业务逻辑(?:与规则)?|关键业务规则",
+        ["逻辑", "关联节点", "适用/触发条件", "输入及来源", "处理规则", "输出", "边界/例外", "业务影响", "代码证据"],
+        r"^R\d+\b",
+        "目标路径上未发现需要单独说明的关键业务逻辑",
+        "business rules",
+        errors,
+    )
+    rule_ids = [
+        re.match(r"^(R\d+)\b", row[0].strip(" `<> ")).group(1) for row in rule_rows
+    ]
+    expected_rules = [f"R{index}" for index in range(1, len(rule_ids) + 1)]
+    if rule_ids != expected_rules:
+        errors.append(f"business rules: IDs must be unique and contiguous; got {rule_ids}")
+    rule_inputs = {
+        re.match(r"^(R\d+)\b", row[0].strip(" `<> ")).group(1): row[3]
+        for row in rule_rows
+    }
+    sequence_scope = named_section(text, r"业务时序图|主时序图")
+    tree_scope = named_section(text, r"代码调用链|关键调用链")
+    for rule_id in rule_ids:
+        token = re.compile(rf"(?<![A-Za-z0-9]){re.escape(rule_id)}(?!\d)")
+        if not token.search(sequence_scope):
+            errors.append(f"business logic: {rule_id} is missing from the sequence diagram")
+        if not token.search(tree_scope):
+            errors.append(f"business logic: {rule_id} is missing from the call tree")
+
+    decision_rows = required_summary_rows(
+        text,
+        r"关键分支决策与异常路径|关键分支决策",
+        ["决策点", "业务问题", "判定条件与顺序", "条件值来源", "命中路径", "未命中/default/fallback", "业务影响", "证据"],
+        rf"^{N_ID}$",
+        "目标路径上未发现改变业务结果的关键分支决策",
+        "decision points",
+        errors,
+    )
+    for row in decision_rows:
+        decision_node = row[0].strip(" `<> ")
+        for column, name in ((4, "matched path"), (5, "unmatched/default/fallback path")):
+            target_nodes = set(N_ID_PATTERN.findall(row[column]))
+            if not target_nodes and not re.search(
+                r"(?:result|boundary):\S+", row[column]
+            ):
+                errors.append(
+                    f"decision points: {row[0]} {name} must reference N or explicit result:/boundary:"
+                )
+            invalid_targets = sorted(
+                target for target in target_nodes if not target.startswith(decision_node + ".")
+            )
+            if invalid_targets:
+                errors.append(
+                    f"decision points: {row[0]} {name} must reference descendant nodes; "
+                    f"got {', '.join(invalid_targets)}"
+                )
+
+    referenced_cells = [
+        ("business steps", row[0], row[1]) for row in step_rows
+    ] + [
+        ("key fields", row[0], row[3]) for row in field_rows
+    ] + [
+        ("business rules", row[0], row[1]) for row in rule_rows
+    ] + [
+        ("decision points", row[0], row[0] + " " + row[4] + " " + row[5])
+        for row in decision_rows
+    ]
+    for label, item_id, value in referenced_cells:
+        refs = set(N_ID_PATTERN.findall(value))
+        if not refs:
+            errors.append(f"{label}: {item_id} must reference at least one N node")
+        missing = sorted(refs - n_ids)
+        if missing:
+            errors.append(f"{label}: {item_id} references missing nodes: {', '.join(missing)}")
+
+    database_section = named_heading_section(text, r"数据库表操作汇总|核心表操作汇总")
+    database_ids = set(re.findall(r"^\|\s*(D\d+)\s*\|", database_section, re.MULTILINE))
+    configuration_section = named_section(text, r"配置项汇总|配置与运行时选择")
+    configuration_names = {
+        cells[0].strip(" `<> ")
+        for line in configuration_section.splitlines()
+        if line.lstrip().startswith("|")
+        and (cells := markdown_cells(line))
+        and cells[0] not in {"配置项名称", "---"}
+        and not cells[0].startswith("---")
+    }
+    known_ids = {"B": known_steps, "R": set(rule_ids), "D": database_ids, "N": n_ids}
+    token_pattern = re.compile(
+        rf"(?<![A-Za-z0-9.])(?:B\d+|R\d+|D\d+|{N_ID})(?![\d.])"
+    )
+    for label, rows in (
+        ("business steps", step_rows),
+        ("key fields", field_rows),
+        ("business rules", rule_rows),
+        ("decision points", decision_rows),
+    ):
+        for row in rows:
+            for token in token_pattern.findall(" ".join(row)):
+                prefix = "N" if token.startswith("N") else token[0]
+                if token not in known_ids[prefix]:
+                    errors.append(f"{label}: {row[0]} references missing ID {token}")
+            for config_name in re.findall(
+                r"(?<![A-Za-z0-9])config:([A-Za-z0-9_.-]+)", " ".join(row)
+            ):
+                if config_name not in configuration_names:
+                    errors.append(
+                        f"{label}: {row[0]} references missing configuration {config_name}"
+                    )
+    return set(rule_ids), rule_inputs
 
 
 def database_annotations(section: str, kind: str) -> list[tuple[str, str, str, str]]:
@@ -638,6 +941,9 @@ def audit(path: Path) -> list[str]:
     tree_ids, tree_symbols = tree_records(tree_section, errors)
     sequence_action_map = sequence_actions(sequence_section)
     tree_action_map = tree_actions(tree_section)
+    sequence_async_ids, tree_async_ids = asynchronous_execution_ids(
+        sequence_section, tree_section
+    )
     table_ids, node_records = node_table_records(node_section, errors)
 
     for label, ids in (("tree", tree_ids), ("node table", table_ids)):
@@ -668,6 +974,14 @@ def audit(path: Path) -> list[str]:
         if tree_symbols.get(node_id) != record.symbol:
             errors.append(f"identity: {node_id} tree symbol {tree_symbols.get(node_id)!r} != {record.symbol!r}")
         expected_action = normalize_action(record.action)
+        validate_action_quality(node_id, expected_action, errors)
+        if "异步" in record.context:
+            if node_id not in sequence_async_ids:
+                errors.append(f"async: {node_id} context is asynchronous but sequence does not use -)")
+            if node_id not in tree_async_ids:
+                errors.append(
+                    f"async: {node_id} context is asynchronous but tree lacks ~~异步~~>"
+                )
         if sequence_action_map.get(node_id) != expected_action:
             errors.append(
                 f"identity: {node_id} sequence action {sequence_action_map.get(node_id)!r} "
@@ -683,7 +997,8 @@ def audit(path: Path) -> list[str]:
     validate_tree_layout(tree_section, errors)
     x_ids = crosscut_ids(text, sequence_section, errors)
     validate_logs(text, table_set, x_ids, errors)
-    validate_configurations(text, table_set, errors)
+    rule_ids, rule_inputs = validate_reader_guidance(text, table_set, errors)
+    validate_configurations(text, table_set, rule_ids, rule_inputs, errors)
     validate_database_operations(text, sequence_section, tree_section, table_set, errors)
     if not sequence_refs:
         errors.append("sequence: no call IDs found")

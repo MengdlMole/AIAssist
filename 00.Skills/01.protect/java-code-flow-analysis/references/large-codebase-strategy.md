@@ -102,7 +102,7 @@
 4. 当前层每个相关调用点都完成分类后，才推进下一层。
 5. 通常扫描到能够识别主要业务子图和边界即可停止统一 BFS；不要把所有叶子都按相同深度机械展开。之后仍以同一 frontier 循环“局部一跳全量发现 -> 关键子图深挖”，而不是永久切换成单链 DFS。
 
-“当前层完整”不等于列出方法体内所有 Java/JDK 调用。只要求每个可能改变本场景业务控制、数据、状态、副作用、异常、事务、线程或可观测性的调用点都有分类。
+“当前层完整”不等于列出方法体内所有 Java/JDK 调用，但也不只检查调用表达式。每个方法还必须完成一次语义扫描：分支、校验/规范化、筛选/排序/聚合/计算、结果组装、状态写入和异常转换都已提取为节点、决策或 `business_rules`。每个可能改变本场景业务控制、数据、状态、副作用、异常、事务、线程或可观测性的调用点都有分类。
 
 ## 3. 第二阶段：给 frontier 排优先级
 
@@ -135,7 +135,8 @@
 - 主 agent 已完成的共享横切节点与禁止重复展开的符号清单。
 - 合理的深度或上下文预算；预算只决定何时返回 partial，不改变完成标准。
 - 必须覆盖成功、关键分支、异常、返回/数据流、数据库表操作、日志和动态绑定。
-- 必须汇总能改变子图可达性、实现选择或结果的配置；当前值只接受开发者输入。
+- 对每个展开方法分别确认直接调用和方法内语义扫描完成；从业务汇点反向提取关键决策的条件值来源，以及影响对象集合、范围、顺序、数值、状态或副作用的关键逻辑，不为内联逻辑虚构节点。
+- 必须汇总能改变子图可达性、实现选择、处理范围、计算口径或结果的配置；当前值只接受开发者输入。
 - 只读约束与证据状态定义。
 - 下面的统一返回格式。
 
@@ -152,6 +153,8 @@
       "key": "<canonical key>",
       "state": "discovered | claimed | expanded | partial | folded | boundary | out-of-scope | unresolved",
       "direct_calls_complete": true,
+      "semantic_scan_complete": true,
+      "fold_reason": "<required only when state=folded>",
       "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
       "evidence_basis": ["project-source"],
       "file_symbol": "<path:line / symbol>",
@@ -171,6 +174,58 @@
       "callsite": "<path:line>",
       "condition": "<condition>",
       "evidence_summary": "<binding, argument or exception fact>",
+      "channel": "<required for async/event/mq: topic/queue/event/executor>",
+      "payload": "<required for async/event/mq: message/event/task payload>",
+      "binding_reference": "<required for async/event/mq: producer-consumer binding evidence>",
+      "failure_semantics": "<required for async/event/mq: ack/retry/dead-letter/callback or unknown>",
+      "evidence_basis": ["project-source"]
+    }
+  ],
+  "decision_points": [
+    {
+      "decision_id": "<callsite-stable id>",
+      "node_key": "<canonical key containing the decision>",
+      "business_question": "<what is being decided>",
+      "condition": "<code condition>",
+      "operand_refs": ["<field/config/rule/db/edge/node>:<existing id>"],
+      "evaluation_order": "<order/precedence>",
+      "matched_target": "<edge/node/result/boundary>:<existing id or explicit result>",
+      "unmatched_target": "<edge/node/result/boundary>:<existing id or explicit result>",
+      "business_effect": "<effect on result/state/side effect>",
+      "reference": "<path:line>",
+      "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
+      "evidence_basis": ["project-source"]
+    }
+  ],
+  "key_fields": [
+    {
+      "field_key": "<source + field stable id>",
+      "name": "<field/parameter>",
+      "source": "<request/config/DB/derived>",
+      "business_meaning": "<meaning>",
+      "node_keys": ["<canonical key>"],
+      "flow_effect": "<effect on branch/range/state/result>",
+      "transform_rule": "<parse/default/null/unit/mapping>",
+      "destination": "<query/state/message/response>",
+      "reference": "<path:line>",
+      "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
+      "evidence_basis": ["project-source"]
+    }
+  ],
+  "business_rules": [
+    {
+      "rule_key": "<reference-stable id; final R id assigned by main agent>",
+      "node_keys": ["<canonical key>"],
+      "name": "<business logic name>",
+      "business_meaning": "<business-language purpose>",
+      "applicability": "<when/under which condition it applies>",
+      "input_refs": ["<field/config/rule/db/edge/node>:<existing id>"],
+      "calculation": "<formula/mapping/algorithm>",
+      "output": "<value/set/state produced>",
+      "boundary_semantics": "<unit/timezone/precision/inclusive-exclusive>",
+      "business_effect": "<effect on scope/result/state/side effect>",
+      "reference": "<path:line>",
+      "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
       "evidence_basis": ["project-source"]
     }
   ],
@@ -223,6 +278,7 @@
       "current_value": "<developer-input-required or developer-provided value>",
       "current_value_source": "developer-input-required | developer-provided",
       "affected_node_keys": ["<canonical key>"],
+      "affected_rule_keys": ["<stable rule_key; empty when not applicable>"],
       "declaration_reference": "<path:line or unavailable>",
       "read_reference": "<path:line>",
       "evidence": "code-confirmed | runtime-confirmed | inferred | unknown",
@@ -237,9 +293,15 @@
 
 `evidence_basis` 至少选择一个合法值：`project-source / configuration-binding / generated-contract / framework-contract / runtime-evidence`。`exception_mechanism` 仅在 `timing=on-exception` 时必填，其他时点省略。
 
+`expanded` 节点必须同时满足 `direct_calls_complete=true` 和 `semantic_scan_complete=true`；前者证明直接调用已分类，后者证明方法体内影响业务语义的非调用逻辑也已检查。`folded` 节点必须给出 `fold_reason`，且理由只能是已读实现后确认的机械透传，不能是层级深、方法私有或上下文不足。
+
+`async/event/mq` 边必须填写 `channel/payload/binding_reference/failure_semantics`，其他边省略这四项。生产者到消费者只有在 destination/routing 与 listener 绑定能够对应时才使用 `resolved`；否则停在 `boundary/unresolved`。消费者入口是新的执行上下文，但在最终调用树中以 `~~异步~~>` 因果子节点继续编号，其内部普通调用继续使用同步子节点。
+
+`decision_points` 只记录改变结果、状态、副作用、实现或异常出口的判断。来源引用只用 `field/config/rule/db/edge/node:<已存在ID>`；`edge:` 目标必须是从决策节点发出的边，`node:` 目标必须是沿已解析边可达的后继节点；无后续调用时写 `result/boundary:<明确结果>`，禁止自由字符串。`key_fields` 不收录机械透传字段。`business_rules` 名称仅为兼容内部协议，语义覆盖所有关键业务逻辑而非仅配置规则；子 agent 从 decision、DB 条件/写入、外部载荷和 response 等汇点反向切片，使用稳定 `rule_key`，主 agent 合并后才编号为 `R1...`。`input_refs` 使用同一来源引用。业务步骤 `B1...` 由主 agent 基于全局图聚合，子 agent 不自行编号。
+
 `database_operations` 对每个实际表逐项记录；JOIN/子查询多表拆项，软删除使用 `UPDATE`。`edge_id` 必须指向实际 `db` 边；同一节点、同类操作、同一表发生多次时仍以不同 `operation_id/edge_id` 保留。无法解析动态表名时以 `unresolved:` 开头并同步加入 `unresolved`。主 agent 将 `operation_id` 映射为 `D1...`、将 `node_key` 转成最终 `N`，并在时序图和调用树的直接节点附 `[DB <D-ID> <OP> <table>]`，不向祖先传播。
 
-`configurations` 只收录改变流程走向的配置。`current_value_source=developer-input-required` 时，`current_value` 必须固定为同名占位；不得把源码默认值、仓库配置或环境变量表达式当作当前运行值。主 agent 合并后将 `affected_node_keys` 转成最终 `N` 编号。
+`configurations` 只收录改变流程、处理范围、口径或结果的配置。`current_value_source=developer-input-required` 时，`current_value` 必须固定为同名占位；不得把源码默认值、仓库配置或环境变量表达式当作当前运行值。配置影响关键逻辑时以 `affected_rule_keys` 关联；主 agent 合并后将 node/rule key 转成最终 `N/R` 编号。
 
 子 agent 不分配最终 `N` 编号、不修改最终文档、不新增枚举值、不把推断改写成事实。若发现代码缺陷，只在它改变本子图控制/数据语义时用一句事实描述，不继续扩展审计。若发现范围外的新子图，只登记到 frontier，不自行无限追踪。默认保持单层委派；只有协调者明确给出命名空间和合并协议时才继续递归委派。上下文或时间预算耗尽时必须返回 `partial`、已覆盖调用点、未完成 frontier 和下一步，不得返回 `expanded`。
 
@@ -253,8 +315,9 @@
 2. 检查子图根节点能否从入口已有边连续到达，终点是否正确接回全局图。
 3. 领取任务前将节点原子地标为 claimed；合并后将新发现节点加入 frontier，并更新 expanded、partial、boundary、unresolved 等状态，避免不同 agent 重复领取。
 4. 对重复读取的共享节点保留证据更强、范围更完整的结果，不拼接矛盾摘要。
-5. 重新计算下一波优先级；在账本合并前不派发依赖上一波结果的新任务。
-6. 独立复核所有高影响负面结论，尤其是“无事务、无数据库表操作、无日志、无流程配置、无实际实现、无消费者、无异常处理”。缺少搜索范围和证据的负面结论一律降为 unknown。
+5. 合并决策、关键字段和业务逻辑，裁决同一代码位置的适用条件、输入/输出或处理规则冲突；图稳定后再聚合 `B`、分配 `R` 并映射最终 `N`。
+6. 重新计算下一波优先级；在账本合并前不派发依赖上一波结果的新任务。
+7. 独立复核所有高影响负面结论，尤其是“无事务、无数据库表操作、无日志、无流程配置、无关键业务逻辑、无实际实现、无消费者、无异常处理”。缺少搜索范围和证据的负面结论一律降为 unknown。
 
 上下文紧张时，主 agent只保留 scope、节点/边摘要、frontier 和未决冲突在当前上下文中；详细代码摘录留在检查点，需要裁决时再读取源文件，不复制所有子 agent 长篇说明。
 
@@ -277,6 +340,7 @@
 - frontier 与 partial 为空；所有发现节点均为 expanded、folded、boundary、out-of-scope 或 unresolved。
 - 每个 expanded 方法内的相关调用点都有对应边或明确分类。
 - 每个关键条件分支、异常出口和返回路径均有去向。
+- 每个关键决策都有条件值来源和两侧结果；关键逻辑均说明适用条件、输入、处理、输出、边界、业务影响和证据。
 - 每条可达数据库边已解析到表、操作、事务与 SQL/映射证据，或显式记为 unresolved。
 - 接口多实现、配置路由、反射与 AOP 已解析，或作为 unresolved 列出候选、影响和验证方式。
 - 所有改变流程走向的配置已汇总并关联节点；缺少当前值时已覆盖候选路径并标明实际选择未知。
