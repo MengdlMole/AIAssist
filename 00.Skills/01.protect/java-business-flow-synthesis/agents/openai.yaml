@@ -1,4 +1,4 @@
 interface:
-  display_name: "Java Business Flow Synthesis"
-  short_description: "串联多个子流程并冻结经开发者确认的分层宏观业务流程"
-  default_prompt: "Use $java-business-flow-synthesis to combine reviewed subflows into a developer-approved, versioned macro business flow."
+  display_name: "Java 宏观业务流程提炼"
+  short_description: "在开发者参与下串联 Flow Pack 并冻结分层宏观流程"
+  default_prompt: "使用 $java-business-flow-synthesis 根据开发者提供的目标、范围和关系，将多个子流程 Flow Pack 提炼为可读、可追溯、可冻结的宏观业务流程。"

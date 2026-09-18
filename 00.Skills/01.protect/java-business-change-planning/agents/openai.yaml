@@ -1,4 +1,4 @@
 interface:
-  display_name: "Java Business Change Planning"
-  short_description: "基于已冻结宏观流程生成可追溯的Java业务代码开发规划"
-  default_prompt: "Use $java-business-change-planning to turn a frozen macro flow and a change request into an evidence-backed Java development plan."
+  display_name: "Java 业务变更开发规划"
+  short_description: "基于冻结宏观流程和 Flow Pack 生成可实施开发规划"
+  default_prompt: "使用 $java-business-change-planning 将已批准的业务需求映射到冻结宏观流程和子流程 Flow Pack，生成可追溯的 Java 开发规划。"

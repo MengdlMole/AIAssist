@@ -1,103 +1,163 @@
 # 开发规划输出规范
 
-## `change-plan.md`
+## 开发者文档
 
-1. **基线与状态**：规划 ID/版本/状态，冻结宏观流程 ID/版本，仓库 commit，子流程报告基线。
-2. **变更 brief**：目标、验收条件、非目标、技术/业务约束和决定引用。
-3. **影响矩阵**：`M node / flow_id / direct|contract|data|operational|unknown / reason / evidence / developer decision`。
-4. **目标流程**：只画变更后必要的宏观切片，节点仍引用冻结 `M`；需要改宏观节点时输出 revision request。
-5. **工作包**：每个 `W` 写范围、当前证据、目标行为、文件/符号改动、依赖、契约/数据、事务/幂等/异常、日志、测试和风险。
-6. **跨流程契约**：API、事件、数据表/状态、兼容策略、迁移/发布顺序、主所有者和消费者。
-7. **实施顺序**：依赖图、分阶段交付、数据迁移、兼容窗口和回滚条件。
-8. **验证**：单元、集成、契约、端到端和可观测性验收点，对应验收条件。
-9. **冲突、风险与未决项**：记录影响、所有者、解决方式和 blocking 状态。
-10. **批准记录**：只记录开发者已明确批准的方案；未批准时保持 `developer-review`。
+`change-plan.md` 与机器契约共用 `A/W` 编号、范围、工作包结果和依赖。正文解释设计，不复制 Flow Pack 或协作者原始返回。
 
-代码改动点使用 `<repo-relative-path>:<line when stable> · <fqcn#method(types)>`。“新增”节点没有现有行号，必须标 `proposed`，不伪造 reference。
+````markdown
+# <变更名称>开发规划
 
-## 子 Agent 返回字段
+> Plan：`<plan_id>@<version>`；状态：`impact-review / design-draft / developer-review / approved / superseded`<br>
+> 宏观基线：`<macro_flow_id>@<version>`<br>
+> 代码基线：`<flow_id=commit...>`
 
-每个工作包使用同一结构，摘要保持一句话：
+## 1. 目标、范围与验收结果
+
+- 目标：`<业务目标>`
+- 验收：`<可观察结果>`
+- 非目标/约束：`<明确排除和技术约束>`
+- 范围决定：`<纳入/排除摘要及开发者决定引用>`
+
+## 2. 影响摘要
+
+- A1 `M1.2 / order-pay / direct`：`<原因>`；依据 `<flow/S或R/D/M>`。
+- A2 `M1.3 / inventory-handle / contract`：`<原因>`；依据 `<typed refs>`。
+
+只列对设计有用的影响，不把每个间接调用都升级为影响项。
+
+## 3. 目标行为变化
+
+<用1–3段说明现状、目标和用户可见差异。若需要修改宏观阶段或交接，在此明确 revision request，而不是偷偷改 M/H。>
+
+## 4. 工作包
+
+### W1 <名称> — change-required
+
+- 范围：`<A...；M...；flow_id>`
+- 当前行为：`<基于 Flow Pack 的现状和证据>`
+- 目标行为：`<可观察结果>`
+- 差异与改动点：
+  - `modify <path> · <fqcn#method(types)>`：`<简洁变化>`；依据 `<flow/N...、flow/R...>`
+- 数据/契约：`<表、字段、事件、API、状态、兼容和迁移>`
+- 一致性：`<事务、幂等、并发、异常和重试>`
+- 测试/可观测性：`<测试与预期；必要日志/指标变化>`
+- 依赖/风险：`<W...；风险和缓解>`
+
+`verification-only` 写验证动作、环境和预期；`no-change` 写无需修改的证据与理由，不虚构改动点。
+
+## 5. 跨流程契约与数据变化
+
+按 API、事件、数据、状态或配置列出唯一所有者、生产者、消费者、变化、兼容和迁移。不涉及则简要说明。
+
+## 6. 实施、迁移与发布顺序
+
+`<W依赖顺序 → 兼容窗口 → 数据迁移 → 发布步骤 → 回滚条件>`
+
+## 7. 验证
+
+把单元、集成、契约、端到端、数据核对和可观测性验收映射到 change brief 的验收条件。
+
+## 8. 风险、未决项与批准状态
+
+- `<冲突、风险、阻塞决定、所有者和解决方式>`
+- 批准：`<未批准/开发者明确批准及决定引用>`
+````
+
+## 机器契约
 
 ```json
 {
-  "work_package_id": "W1",
-  "coverage": "complete",
-  "current_evidence": ["flow-id/N1.2"],
-  "target_behavior": "<observable behavior>",
-  "change_points": [
-    {
-      "kind": "modify",
-      "path": "src/main/java/.../Service.java",
-      "symbol": "a.b.Service#method(Type)",
-      "change": "<concise delta>",
-      "evidence_refs": ["flow-id/N1.2"]
-    }
-  ],
-  "contracts": [],
-  "consistency": "<transaction/idempotency/error handling>",
-  "observability": "<existing and proposed logs/metrics>",
-  "tests": ["<test and expected result>"],
-  "risks": [],
-  "blocking_open_decisions": []
-}
-```
-
-`coverage=partial` 时必须列出剩余分析边界，不得标记工作包已完成。
-
-## `change-plan.contract.json`
-
-```json
-{
-  "schema_version": 1,
+  "schema_version": 2,
   "plan_id": "partial-refund",
   "version": "1.0",
   "status": "developer-review",
-  "repository_baseline": "<commit>",
   "macro_ref": {
     "macro_flow_id": "order-lifecycle",
     "version": "1.0",
-    "status": "frozen"
+    "status": "frozen",
+    "contract_digest": "sha256:<digest>"
+  },
+  "repository_baselines": {
+    "order-pay": "<commit>",
+    "refund-notify": "<commit>"
   },
   "change_brief": {
-    "goal": "<goal>",
-    "acceptance_criteria": ["<observable result>"],
-    "non_goals": ["<excluded result>"],
-    "constraints": ["<constraint>"],
-    "decision_ref": "<developer input reference>"
+    "goal": "支持部分退款",
+    "acceptance_criteria": ["退款金额小于订单金额时订单保持部分退款状态"],
+    "non_goals": ["不改变支付渠道退款协议"],
+    "constraints": ["兼容已有全额退款"],
+    "decision_ref": "developer:change-1"
   },
   "impact_scope": [
     {
-      "macro_node_id": "M1.2.1",
+      "id": "A1",
+      "macro_node_id": "M1.2",
       "flow_id": "order-pay",
       "impact_type": "direct",
-      "reason": "<reason>",
-      "developer_confirmed": true,
-      "decision_ref": "decision-log:D2"
+      "reason": "退款计算和状态写入发生变化",
+      "evidence_refs": ["order-pay/R2", "order-pay/D1"],
+      "status": "confirmed"
     }
   ],
+  "scope_decision": {
+    "confirmed": true,
+    "included_impact_ids": ["A1"],
+    "excluded_impact_ids": [],
+    "decision_ref": "developer:scope-1"
+  },
   "work_packages": [
     {
       "id": "W1",
+      "name": "调整退款计算和状态",
       "flow_id": "order-pay",
-      "macro_node_ids": ["M1.2.1"],
-      "objective": "<objective>",
-      "report_baseline": "<commit>",
-      "evidence_coverage": "complete",
-      "analysis_mode": "reuse-report",
-      "change_points": [],
+      "macro_node_ids": ["M1.2"],
+      "impact_ids": ["A1"],
+      "objective": "支持部分退款并保持全额退款兼容",
+      "outcome": "change-required",
+      "analysis_mode": "reuse-flow-pack",
+      "evidence_coverage": "sufficient",
+      "current_behavior": "仅支持全额退款并写入REFUNDED",
+      "target_behavior": "根据累计退款金额写入PARTIAL_REFUNDED或REFUNDED",
+      "change_points": [
+        {
+          "kind": "modify",
+          "path": "src/main/java/.../RefundService.java",
+          "symbol": "a.b.RefundService#apply(RefundCommand)",
+          "change": "计算累计退款额并选择目标状态",
+          "evidence_refs": ["order-pay/N1.2", "order-pay/R2"]
+        }
+      ],
       "dependencies": [],
-      "tests": ["<test>"],
-      "risks": []
+      "verification": ["部分退款后状态为PARTIAL_REFUNDED"],
+      "risks": [],
+      "no_change_reason": ""
     }
   ],
   "cross_flow_contracts": [],
+  "implementation_order": ["W1"],
   "conflicts": [],
   "blocking_open_decisions": [],
   "approval": {"status": "pending", "decision_ref": "", "approved_at": ""}
 }
 ```
 
-`status` 只用 `impact-review / design-draft / developer-review / approved / superseded`；`analysis_mode` 只用 `reuse-report / refresh-with-java-code-flow-analysis`；`evidence_coverage` 只用 `complete / partial / stale / unknown`；`change_points.kind` 只用 `add / modify / remove / config / schema`。`reuse-report` 必须满足 `report_baseline == repository_baseline` 且 coverage 为 `complete`。除 `add` 外，改动点必须引用本工作包的 `<flow_id>/N...` 现有证据，且 `N` 必须存在于冻结宏观契约的来源节点清单。同一 `path + symbol` 不得由多个工作包拥有。
+## 约束
 
-`cross_flow_contracts` 非空时，每项必须包含：`id`、`kind(api/event/data/state/config)`、`owner_work_package`、非空 `producers/consumers`、`change`、`compatibility`、`migration` 和 `status(draft/confirmed)`。已批准规划中所有跨流程契约必须为 `confirmed`。
+- `status`：`impact-review / design-draft / developer-review / approved / superseded`。
+- `impact_type`：`direct / contract / data / operational / unknown`；`status`：`confirmed / inferred / unknown`。
+- 开发者通过一个 `scope_decision` 确认整体纳入/排除边界；不要求每条代码已证实影响单独审批。正式工作包只能覆盖 included impacts。
+- `analysis_mode`：`reuse-flow-pack / refresh-with-java-code-flow-analysis`。复用要求当前 baseline 与宏观来源一致、相关证据覆盖 `sufficient` 且无阻塞未知。
+- `evidence_refs` 支持 `<flow_id>/<S|N|R|D|M|L|C|U id>`，并必须存在于来源 Flow Pack。新增代码可没有现有 `N`，但应引用驱动新增的阶段、规则或契约事实；确无现有事实时说明来自验收条件。
+- `change_points.kind`：`add / modify / remove / config / schema`。现有代码使用 `path + symbol`；新增必须写 `"proposed": true`，不伪造行号；没有现有 Flow Pack 证据时用 `requirement_ref` 指向验收条件。
+- 工作包 outcome：`change-required` 必须有 change points；`verification-only` 必须有验证项；`no-change` 必须有 `no_change_reason`、证据和验证项。
+- 同一 `path + symbol` 只有一个工作包拥有；依赖不可成环。`implementation_order` 必须包含每个工作包一次并尊重依赖。
+- 跨流程契约记录 `api/event/data/state/config`、唯一 owner、生产者、消费者、变化、兼容、迁移和状态。批准时全部为 `confirmed`。
+- 批准时所有 included impacts 被工作包覆盖，evidence coverage 为 `sufficient`，阻塞决定为空，冲突已解决，宏观契约 digest 未变化。
+
+## 自检
+
+- 每个改动点是否说明当前、目标、差异和证据，而非只列文件？
+- 数据最终去向、状态、事件/API 和迁移是否与相关 `D/M/R` 对齐？
+- 是否为本来无需改动的流程虚构 change point？
+- 测试是否对应验收结果和关键风险？
+- Markdown 与契约的 `A/W`、outcome 和依赖是否一致？
