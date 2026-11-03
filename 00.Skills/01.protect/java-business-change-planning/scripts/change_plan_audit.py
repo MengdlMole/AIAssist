@@ -17,6 +17,7 @@ IMPACT_TYPES = {"direct", "contract", "data", "operational", "unknown"}
 IMPACT_STATUSES = {"confirmed", "inferred", "unknown"}
 ANALYSIS_MODES = {"reuse-flow-pack", "refresh-with-java-code-flow-analysis"}
 EVIDENCE_COVERAGE = {"sufficient", "partial", "stale", "unknown"}
+FLOW_COVERAGE = {"main-path", "key-paths-covered", "static-scope-complete", "partial"}
 OUTCOMES = {"change-required", "verification-only", "no-change"}
 CHANGE_KINDS = {"add", "modify", "remove", "config", "schema"}
 CONTRACT_KINDS = {"api", "event", "data", "state", "config"}
@@ -228,6 +229,56 @@ def audit(
         if flow_id not in sources or not nonempty(value):
             errors.append(f"repository_baselines has invalid entry {flow_id!r}")
 
+    refreshed_value = plan.get("refreshed_flows", [])
+    if not isinstance(refreshed_value, list):
+        errors.append("refreshed_flows must be an array")
+        refreshed_value = []
+    refreshed_sources: dict[str, dict[str, Any]] = {}
+    refreshed_headers: dict[str, dict[str, Any]] = {}
+    refreshed_facts: dict[str, set[str]] = {}
+    for index, refreshed in enumerate(refreshed_value):
+        if not isinstance(refreshed, dict):
+            errors.append(f"refreshed_flows[{index}] must be an object")
+            continue
+        flow_id = refreshed.get("flow_id")
+        if not nonempty(flow_id) or flow_id not in sources or flow_id in refreshed_sources:
+            errors.append(f"refreshed_flows[{index}] has invalid or duplicate flow_id")
+            continue
+        refreshed_sources[flow_id] = refreshed
+        for field in ("flow_pack", "baseline", "pack_digest"):
+            if not nonempty(refreshed.get(field)):
+                errors.append(f"refreshed flow {flow_id}.{field} must be non-empty")
+        pack_value = refreshed.get("flow_pack")
+        if not nonempty(pack_value):
+            continue
+        pack_path = Path(pack_value)
+        if not pack_path.is_absolute():
+            pack_path = plan_path.parent / pack_path
+        header, facts = load_flow_pack(pack_path, errors)
+        refreshed_headers[flow_id] = header
+        refreshed_facts[flow_id] = facts
+        if header.get("id") != flow_id:
+            errors.append(f"refreshed flow {flow_id} does not match its Flow Pack id")
+        if header.get("baseline") != refreshed.get("baseline"):
+            errors.append(f"refreshed flow {flow_id} baseline does not match its Flow Pack")
+        if header.get("coverage") not in FLOW_COVERAGE:
+            errors.append(f"refreshed flow {flow_id} has invalid Flow Pack coverage")
+        frontier_count = header.get("frontier_count")
+        if not isinstance(frontier_count, int) or frontier_count < 0:
+            errors.append(f"refreshed flow {flow_id} has invalid frontier_count")
+        elif (frontier_count > 0) != (header.get("coverage") == "partial"):
+            errors.append(f"refreshed flow {flow_id} frontier_count and coverage are inconsistent")
+        unresolved_count = header.get("unresolved_count")
+        if not isinstance(unresolved_count, int) or unresolved_count < 0:
+            errors.append(f"refreshed flow {flow_id} has invalid unresolved_count")
+        if baselines.get(flow_id) != refreshed.get("baseline"):
+            errors.append(f"repository_baselines[{flow_id!r}] does not match refreshed Flow Pack")
+        try:
+            if refreshed.get("pack_digest") != digest(pack_path):
+                errors.append(f"refreshed flow {flow_id} Flow Pack digest changed")
+        except OSError as exc:
+            errors.append(f"cannot hash refreshed flow {flow_id}: {exc}")
+
     brief = plan.get("change_brief")
     if not isinstance(brief, dict):
         errors.append("change_brief must be an object")
@@ -303,6 +354,7 @@ def audit(
     dependencies: dict[str, list[str]] = {}
     change_owners: dict[tuple[str, str], str] = {}
     covered_impacts: set[str] = set()
+    used_refreshed_flows: set[str] = set()
     for index, package in enumerate(packages):
         if not isinstance(package, dict):
             errors.append(f"work_packages[{index}] must be an object")
@@ -337,15 +389,46 @@ def audit(
                 covered_impacts.add(impact_id)
         if package.get("outcome") not in OUTCOMES:
             errors.append(f"work package {package_id} has invalid outcome")
-        if package.get("analysis_mode") not in ANALYSIS_MODES:
+        analysis_mode = package.get("analysis_mode")
+        if analysis_mode not in ANALYSIS_MODES:
             errors.append(f"work package {package_id} has invalid analysis_mode")
         if package.get("evidence_coverage") not in EVIDENCE_COVERAGE:
             errors.append(f"work package {package_id} has invalid evidence_coverage")
-        if package.get("analysis_mode") == "reuse-flow-pack" and (
+        package_facts = source_facts.get(flow_id, set())
+        if analysis_mode == "reuse-flow-pack" and (
             baselines.get(flow_id) != sources.get(flow_id, {}).get("baseline")
             or package.get("evidence_coverage") != "sufficient"
         ):
             errors.append(f"work package {package_id} cannot reuse stale or insufficient Flow Pack evidence")
+        elif analysis_mode == "refresh-with-java-code-flow-analysis":
+            refreshed = refreshed_sources.get(flow_id)
+            if not refreshed:
+                errors.append(f"work package {package_id} requires a refreshed_flows entry")
+            else:
+                used_refreshed_flows.add(flow_id)
+                package_facts = refreshed_facts.get(flow_id, set())
+                header = refreshed_headers.get(flow_id, {})
+                if package.get("evidence_coverage") == "sufficient" and (
+                    header.get("coverage") == "partial"
+                    or header.get("frontier_count", 0) != 0
+                ):
+                    errors.append(f"work package {package_id} cannot claim sufficient refreshed evidence with an open frontier")
+        evidence_refs = package.get("evidence_refs")
+        if analysis_mode == "refresh-with-java-code-flow-analysis" and (
+            not isinstance(evidence_refs, list) or not evidence_refs
+        ):
+            errors.append(f"refreshed work package {package_id} requires evidence_refs")
+            evidence_refs = []
+        elif evidence_refs is None:
+            evidence_refs = []
+        elif not isinstance(evidence_refs, list):
+            errors.append(f"work package {package_id}.evidence_refs must be an array")
+            evidence_refs = []
+        for ref in evidence_refs:
+            match = FLOW_REF.fullmatch(ref) if isinstance(ref, str) else None
+            if not match or match.group(1) != flow_id or match.group(2) not in package_facts:
+                label = "refreshed evidence" if analysis_mode == "refresh-with-java-code-flow-analysis" else "evidence"
+                errors.append(f"work package {package_id} has invalid {label} {ref!r}")
 
         points = package.get("change_points")
         verification = package.get("verification")
@@ -391,7 +474,7 @@ def audit(
                 errors.append(f"new change point in {package_id} must set proposed=true")
             for ref in refs:
                 match = FLOW_REF.fullmatch(ref) if isinstance(ref, str) else None
-                if not match or match.group(1) != flow_id or match.group(2) not in source_facts.get(flow_id, set()):
+                if not match or match.group(1) != flow_id or match.group(2) not in package_facts:
                     errors.append(f"work package {package_id} has invalid change evidence {ref!r}")
 
         deps = package.get("dependencies")
@@ -406,6 +489,9 @@ def audit(
                 errors.append(f"work package {package_id} has invalid dependency {dependency!r}")
     if has_cycle(dependencies):
         errors.append("work package dependency cycle detected")
+    unused_refreshed = set(refreshed_sources) - used_refreshed_flows
+    if unused_refreshed:
+        errors.append(f"refreshed_flows entries are not used by refresh work packages: {sorted(unused_refreshed)}")
 
     implementation_order = plan.get("implementation_order")
     if not isinstance(implementation_order, list) or set(implementation_order) != set(package_by_id) or len(implementation_order) != len(package_by_id):

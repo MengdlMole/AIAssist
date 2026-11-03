@@ -23,6 +23,8 @@ description: 基于已冻结的宏观业务流程、明确需求和子流程 Flo
 
 宏观流程未冻结时只能输出候选影响预览，不能创建正式工作包或批准方案。
 
+用户要求自动完成端到端变更流程、但宏观契约或 Flow Pack 缺失、过期时，将缺口交给 `java-change-workflow` 补齐；用户只要求评审或规划已有材料时，停在候选影响预览并报告前置条件，不擅自扩展分析范围。
+
 ## 按需加载
 
 生成文件前完整读取 [references/output-standard.md](references/output-standard.md)。
@@ -33,7 +35,7 @@ description: 基于已冻结的宏观业务流程、明确需求和子流程 Flo
 2. 范围确认后：仅对纳入流程读取 `node / edge / rule / lineage / config / transaction / retry`。
 3. 只有涉及可观测性变更或排障要求时读取 `log`。
 
-Flow Pack 与当前基线一致、相关切片足够且没有阻塞未知时使用 `reuse-flow-pack`；否则对分配的入口和场景使用 `java-code-flow-analysis` 局部刷新，不机械重做整个流程。
+Flow Pack 与当前基线一致、相关切片足够且没有阻塞未知时使用 `reuse-flow-pack`；否则对分配的入口和场景使用 `java-code-flow-analysis` 局部刷新，不机械重做整个流程。刷新后必须在契约的 `refreshed_flows` 中记录新 Flow Pack 的路径、baseline 和 digest，刷新工作包只能引用该产物中的事实。
 
 ## 工作流
 
@@ -65,6 +67,12 @@ Flow Pack 与当前基线一致、相关切片足够且没有阻塞未知时使�
 
 不默认为每个工作包生成独立文件；只有跨团队交接或用户明确要求时拆分。
 
-批准前从本 skill 目录运行：
+评审前先运行不带最终状态门禁的结构校验：
+
+`python3 scripts/change_plan_audit.py <plan.json> <macro-contract.json> --report <change-plan.md>`
+
+开发者批准、写入 `approved` 状态和批准信息后，再运行最终门禁：
 
 `python3 scripts/change_plan_audit.py <plan.json> <macro-contract.json> --report <change-plan.md> --require-approved`
+
+用户要求实施时，将通过最终门禁的规划交给 `java-change-execution`；本 skill 不直接修改业务代码。

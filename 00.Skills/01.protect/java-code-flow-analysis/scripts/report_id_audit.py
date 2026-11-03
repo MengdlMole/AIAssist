@@ -268,9 +268,18 @@ def audit_flow_pack(
                 if node_id not in node_ids:
                     errors.append(f"flow-pack:{record['_line']}: stage references unknown node {node_id}")
 
+    edge_keys: set[tuple[str, str, str, str]] = set()
     for record in by_type.get("edge", []):
         if record.get("from") not in node_ids or not is_target(record.get("to"), node_ids):
             errors.append(f"flow-pack:{record['_line']}: edge has unknown from/to")
+        if any(not isinstance(record.get(field), str) or not record[field].strip() for field in ("from", "to", "kind", "callsite")):
+            errors.append(f"flow-pack:{record['_line']}: edge requires non-empty from/to/kind/callsite")
+            continue
+        edge_key = (record["from"], record["to"], record["kind"], record["callsite"])
+        if edge_key in edge_keys:
+            errors.append(f"flow-pack:{record['_line']}: duplicate edge identity {edge_key!r}")
+        else:
+            edge_keys.add(edge_key)
 
     for record_type in ("crosscut", "decision", "rule", "sink", "log", "config", "transaction", "retry"):
         for record in by_type.get(record_type, []):

@@ -34,6 +34,7 @@
 ### W1 <名称> — change-required
 
 - 范围：`<A...；M...；flow_id>`
+- 分析证据：`<reuse/refresh；Flow Pack路径@baseline；digest；typed refs>`
 - 当前行为：`<基于 Flow Pack 的现状和证据>`
 - 目标行为：`<可观察结果>`
 - 差异与改动点：
@@ -81,6 +82,7 @@
     "order-pay": "<commit>",
     "refund-notify": "<commit>"
   },
+  "refreshed_flows": [],
   "change_brief": {
     "goal": "支持部分退款",
     "acceptance_criteria": ["退款金额小于订单金额时订单保持部分退款状态"],
@@ -116,6 +118,7 @@
       "outcome": "change-required",
       "analysis_mode": "reuse-flow-pack",
       "evidence_coverage": "sufficient",
+      "evidence_refs": ["order-pay/N1.2", "order-pay/R2"],
       "current_behavior": "仅支持全额退款并写入REFUNDED",
       "target_behavior": "根据累计退款金额写入PARTIAL_REFUNDED或REFUNDED",
       "change_points": [
@@ -147,7 +150,9 @@
 - `impact_type`：`direct / contract / data / operational / unknown`；`status`：`confirmed / inferred / unknown`。
 - 开发者通过一个 `scope_decision` 确认整体纳入/排除边界；不要求每条代码已证实影响单独审批。正式工作包只能覆盖 included impacts。
 - `analysis_mode`：`reuse-flow-pack / refresh-with-java-code-flow-analysis`。复用要求当前 baseline 与宏观来源一致、相关证据覆盖 `sufficient` 且无阻塞未知。
-- `evidence_refs` 支持 `<flow_id>/<S|N|R|D|M|L|C|U id>`，并必须存在于来源 Flow Pack。新增代码可没有现有 `N`，但应引用驱动新增的阶段、规则或契约事实；确无现有事实时说明来自验收条件。
+- 使用 refresh 时，顶层 `refreshed_flows` 必须为对应 `flow_id` 提供唯一的 `flow_pack / baseline / pack_digest`；路径相对 `change-plan.contract.json` 解析。其 header 的 `id/baseline`、文件 SHA-256 和 `repository_baselines` 必须一致；声明 `sufficient` 时不得保留开放 frontier。没有 refresh 工作包时省略该字段或使用空数组。
+- `impact_scope.evidence_refs` 仍引用冻结宏观契约的来源 Flow Pack，用于证明影响范围；refresh 工作包的 `evidence_refs` 以及其 `change_points.evidence_refs` 必须引用刷新后的 Flow Pack，用于证明当前实现和改动点。不得用旧事实冒充刷新结果。
+- `evidence_refs` 支持 `<flow_id>/<S|N|R|D|M|L|C|U id>`。新增代码可没有现有 `N`，但应引用驱动新增的阶段、规则或契约事实；确无现有事实时说明来自验收条件。
 - `change_points.kind`：`add / modify / remove / config / schema`。现有代码使用 `path + symbol`；新增必须写 `"proposed": true`，不伪造行号；没有现有 Flow Pack 证据时用 `requirement_ref` 指向验收条件。
 - 工作包 outcome：`change-required` 必须有 change points；`verification-only` 必须有验证项；`no-change` 必须有 `no_change_reason`、证据和验证项。
 - 同一 `path + symbol` 只有一个工作包拥有；依赖不可成环。`implementation_order` 必须包含每个工作包一次并尊重依赖。

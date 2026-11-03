@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java 变更实施与验证"
+  short_description: "依据已确认方案实施 Java 变更并验证端到端业务链路"
+  default_prompt: "使用 $java-change-execution 按已确认的变更方案实施 Java 代码修改、运行验证并报告结果。"

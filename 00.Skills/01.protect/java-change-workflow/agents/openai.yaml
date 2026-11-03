@@ -1,0 +1,4 @@
+interface:
+  display_name: "Java 变更交付工作流"
+  short_description: "按影响范围编排 Java 分析、规划、实施与验证交付阶段"
+  default_prompt: "使用 $java-change-workflow 判断 Java 变更范围，并编排从代码分析到验证交付的适当流程。"

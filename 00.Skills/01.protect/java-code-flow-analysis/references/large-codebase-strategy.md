@@ -18,6 +18,8 @@
 
 规范符号使用 `<module>:<fqcn>#<method>(<types>)`。同一方法可共享符号节点，但每个调用点和上下文是独立边；展示编号仅在合并完成后由主分析者分配。
 
+深度图账本中的 `edge_id` 只是供 `graph_audit.py` 在临时碎片内连接数据库操作等记录的局部键，必须在本次图账本中唯一；它不是正式 Flow Pack 的稳定 ID。合并输出时，Flow Pack `edge` 使用 `from + to + kind + callsite` 标识，不复制 `edge_id`。
+
 节点状态只用：`discovered / claimed / expanded / partial / folded / boundary / out-of-scope / unresolved`。`partial` 和 `unresolved` 必须说明缺什么。
 
 ## 2. 受约束的浅层 BFS

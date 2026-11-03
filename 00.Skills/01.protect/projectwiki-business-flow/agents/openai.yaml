@@ -1,0 +1,4 @@
+interface:
+  display_name: "业务流程入库 ProjectWikiSpace"
+  short_description: "将 Markdown 或当前对话的业务流程分析整理入库，保留依据并维护 Wiki 导航"
+  default_prompt: "使用 $projectwiki-business-flow 将指定 Markdown 或当前任务中刚分析的业务流程按 ProjectWikiSpace 当前规范整理入库，复用已有源码依据；沿用已指定的位置或自动归档许可，缺少时先询问，并维护导航索引。"

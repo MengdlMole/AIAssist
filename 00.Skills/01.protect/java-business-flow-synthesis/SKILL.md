@@ -18,11 +18,13 @@ description: 在开发者提供业务目标、范围和关键关系后，将多�
 
 正式串联前必须有开发者输入：`业务目标 + 起点 + 终点 + 纳入的 flow_id + 至少一个已知关系，或允许提出候选关系`。自然语言即可。
 
-输入不足时只盘点 Flow Pack、列候选关系和少量聚焦问题，状态保持 `waiting-for-developer-input`；不分配最终 `M/H` 编号，不输出可冻结流程，也不从沉默推断批准。
+输入不足时只在对话中盘点 Flow Pack、列候选关系和少量聚焦问题，将会话视为 `waiting-for-developer-input`；若需要落盘契约，其状态仍使用 `draft`。此时不分配最终 `M/H` 编号、不输出可冻结流程，也不从沉默推断批准。
 
 ## 输入与按需加载
 
 主要输入是 `java-code-flow-analysis` 生成的 `.flow.jsonl`。先只读取 `flow / stage / decision / sink / lineage / unknown`；只有交接或语义存在歧义时才读取 `node / edge / rule` 或开发者 Markdown，通常不读取日志。
+
+用户要求从现有代码自动完成宏观提炼、但必要 Flow Pack 缺失或过期时，将缺口交给 `java-change-workflow`，由其调用 `java-code-flow-analysis` 只补相关入口和场景；用户只要求评审已有材料时，仅报告缺口，不扩展为新的代码分析任务。
 
 生成文件前完整读取 [references/output-standard.md](references/output-standard.md)。
 
@@ -63,6 +65,12 @@ description: 在开发者提供业务目标、范围和关键关系后，将多�
 
 报告较多时，可将互不重叠的“单 Flow Pack 宏观卡片提取”委派；主分析者保留 brief、关系裁决、全局编号和冻结权。协作收益不明显时保持单分析者。
 
-冻结前从本 skill 目录运行：
+评审前先运行不带最终状态门禁的结构校验：
+
+`python3 scripts/macro_flow_audit.py <contract.json> --report <macro-flow.md>`
+
+开发者批准、写入 `frozen` 状态和批准信息后，再运行最终门禁：
 
 `python3 scripts/macro_flow_audit.py <contract.json> --report <macro-flow.md> --require-frozen`
+
+需要继续设计跨流程改造时，将通过最终门禁的宏观契约交给 `java-business-change-planning`。
